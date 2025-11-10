@@ -15,6 +15,8 @@ import json
 from openai import OpenAI
 import pytz
 from datetime import datetime, timezone
+from tqdm import tqdm
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 load_dotenv()
 
@@ -28,11 +30,6 @@ vect_store_client = QdrantClient(path="./qdrant_db")
 topk = 5
 system_prompt = FACT_RETRIEVAL_PROMPT
 
-if not os.path.exists("./qdrant_db/collection/" + collection_name):
-    vect_store_client.create_collection(
-        collection_name=collection_name,
-        vectors_config=VectorParams(size=dimension, distance=Distance.DOT),
-    )
 
 def search(collection_name, vect_store_client, query_vector, top_k=5):
     search_result = vect_store_client.query_points(
@@ -68,10 +65,7 @@ def generate_response(llm_client, question, question_date, context):
             )
 
     return response
-
-with open("./data/longmemeval_s_cleaned.json", "r") as f:
-    lines = json.load(f)[:1]
-
+ 
 def process_user_memory(line):
     dates = line.get("haystack_dates")
     sessions = line.get("haystack_sessions")
@@ -80,7 +74,7 @@ def process_user_memory(line):
     question_date_format = "%Y/%m/%d (%a) %H:%M UTC"
     question_date_string = datetime.strptime(question_date, question_date_format).replace(tzinfo=timezone.utc)
     question = line.get("question")
-    golden_answer = line.get("answer")
+    golden_answer = line.get("answer") 
 
     operation_counts = {"ADD": 0, "UPDATE": 0, "DELETE": 0, "NONE": 0}
 
@@ -111,10 +105,8 @@ def process_user_memory(line):
                 new_retrieved_facts = []
             else:
                 try:
-                    # First try direct JSON parsing
                     new_retrieved_facts = json.loads(response)["facts"]
                 except json.JSONDecodeError:
-                    # Try extracting JSON from response using built-in function
                     extracted_json = extract_json(response)
                     new_retrieved_facts = json.loads(extracted_json)["facts"]
         except Exception as e:
@@ -125,6 +117,7 @@ def process_user_memory(line):
         if not new_retrieved_facts:
             # print("No new facts retrieved; skipping memory update.")
             continue
+            
         retrieved_old_facts = []
         new_message_embeddings = {} 
         try:
@@ -133,11 +126,9 @@ def process_user_memory(line):
                 new_message_embeddings[fact] = embedding_vector 
                 
                 existing_memories = search(collection_name, vect_store_client, embedding_vector, top_k=5)
-                # print(f"检索到的记忆点: {existing_memories}")
                 for mem in existing_memories:
                     retrieved_old_facts.append({"id": mem.id, "text": mem.payload.get("data", "")})
                     # print("mem:", mem) 
-            # print(f"检索到的旧事实: {retrieved_old_facts}")
         except Exception as e:
             print(f"生成嵌入时出错，请检查您的 API Key 和网络连接：{e}")
 
@@ -155,7 +146,6 @@ def process_user_memory(line):
 
         if new_retrieved_facts:
             memory_action_prompt = get_update_memory_messages(retrieved_old_facts, new_retrieved_facts)
-            # print("用于更新记忆的提示:", memory_action_prompt)
             response = openai_client.chat.completions.create(
                 model=MODEL_NAME,
                 messages=[{"role": "user", "content": memory_action_prompt}],
@@ -165,7 +155,7 @@ def process_user_memory(line):
             # print("update_response:", update_response)
             try:
                 if not update_response.strip() or not update_response:
-                    print("Empty response for memory update.")
+                    # print("Empty response for memory update.")
                     new_memories_with_actions = {}
                 else:
                     response = remove_code_blocks(update_response)
@@ -292,96 +282,119 @@ def response_user(line):
 
     return answer
 
+def process_and_evaluate_user(line, user_index, client):
+    """
+    封装单个用户的所有处理步骤，以便并行执行。
+    返回一个包含所有统计信息的字典。
+    """
+    try:
+        memory_counts = process_user_memory(line)
+        
+        answer = response_user(line)
+        golden_answer = line.get("answer") 
+        question = line.get("question")
+        
+        is_correct = lme_grader(client, question, golden_answer, answer)
+        
+        return {
+            "index": user_index,
+            "is_correct": is_correct,
+            "counts": memory_counts,
+            "question": question,
+            "answer": answer,
+            "golden_answer": golden_answer
+        }
+    except Exception as e:
+        print(f"Error processing user {user_index} ({line.get('question', 'Unknown')[:20]}...): {e}")
+        return {
+            "index": user_index,
+            "is_correct": False,
+            "counts": {"ADD": 0, "UPDATE": 0, "DELETE": 0, "NONE": 0},
+            "question": line.get("question", "N/A")
+        }
 
-evaluation_results = []
-correct_count = 0
-total_evaluated = 0
-# **用于存储每个用户的详细统计信息**
-user_detail_results = [] 
-# **用于统计所有用户的总操作数**
-total_memory_counts = {"ADD": 0, "UPDATE": 0, "DELETE": 0, "NONE": 0}
 
+if __name__ == "__main__":
+    # 清空并重新创建 Qdrant 集合
+    try:
+        if vect_store_client.collection_exists(collection_name=collection_name):
+            vect_store_client.delete_collection(collection_name=collection_name)
+        vect_store_client.create_collection(
+            collection_name=collection_name,
+            vectors_config=VectorParams(size=dimension, distance=Distance.DOT),
+        )
+    except Exception as e:
+        print(f"清空 Qdrant 集合失败: {e}. 请检查 Qdrant 客户端连接。")
+        exit()
 
-with open("./data/longmemeval_s_cleaned.json", "r") as f:
-    lines = json.load(f)[:2]
-
-for idx, line in enumerate(lines):
-    user_index = idx + 1
-    print(f"\n\n==== 处理第 {user_index} 个用户的记忆 (存储阶段) ====")
+    with open("./data/longmemeval_s_cleaned.json", "r") as f:
+        lines = json.load(f)[:100]
     
-    # **修改：捕获 process_user_memory 返回的计数**
-    memory_counts = process_user_memory(line)
-    
-    print(f"\n\n==== 为第 {user_index} 个用户生成回答 (检索阶段) ====")
-    answer = response_user(line)
-    golden_answer = line.get("answer") # 获取黄金答案
-    question = line.get("question") # 获取问题
+    print(f"已加载 {len(lines)} 个用户/问题。")
 
-    print(f"生成的回答: {answer}") # (保留原始打印)
-    print(f"黄金答案: {golden_answer}") # (保留原始打印)
+    user_detail_results = [] 
+    total_memory_counts = {"ADD": 0, "UPDATE": 0, "DELETE": 0, "NONE": 0}
     
-    # 2. 调用 Grader 进行评估
-    is_correct = lme_grader(openai_client, question, golden_answer, answer)
+    MAX_WORKERS = 10
+    futures = []
+
+    print(f"开始使用 {MAX_WORKERS} 个线程并行处理...")
     
-    # 3. 统计结果
-    total_evaluated += 1
-    if is_correct:
-        correct_count += 1
-        evaluation_results.append(True)
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        for idx, line in enumerate(lines):
+            future = executor.submit(process_and_evaluate_user, line, idx + 1, openai_client)
+            futures.append(future)
+        
+        for future in tqdm(as_completed(futures), total=len(futures), desc="评估进度"):
+            result = future.result()
+            user_detail_results.append(result)
+
+    user_detail_results.sort(key=lambda x: x.get("index", 0))
+
+    correct_count = 0
+    total_evaluated = len(user_detail_results)
+
+    for res in user_detail_results:
+        if res.get("is_correct"):
+            correct_count += 1
+        
+        counts = res.get("counts", {})
+        for key in total_memory_counts:
+            total_memory_counts[key] += counts.get(key, 0)
+
+    print("\n\n==================================================")
+    print("             🎯 最终评估结果") 
+    print("==================================================")
+
+    if total_evaluated > 0:
+        final_accuracy = correct_count / total_evaluated
+        print(f"总评估问题数: {total_evaluated}")
+        print(f"正确回答数: {correct_count}")
+        print(f"最终总准确率: {final_accuracy:.4f} ({final_accuracy * 100:.2f}%)")
     else:
-        evaluation_results.append(False)
+        print("没有评估任何问题。")
+    print("==================================================")
 
-    print(f"LLM 评估结果: {'CORRECT' if is_correct else 'WRONG'}") # (保留原始打印)
-    print(f"当前累计准确率: {correct_count / total_evaluated:.4f} ({correct_count}/{total_evaluated})") # (保留原始打印)
+    print("\n\n==================================================")
+    print("        📊 详细记忆操作统计 (按用户)")
+    print("==================================================")
 
-    # **新增：存储当前用户的详细结果**
-    user_detail_results.append({
-        "index": user_index,
-        "is_correct": is_correct,
-        "counts": memory_counts,
-        "question": question
-    })
-    
-    # **新增：累积总操作数**
-    for key in total_memory_counts:
-        total_memory_counts[key] += memory_counts.get(key, 0)
+    for res in user_detail_results:
+        user_index = res["index"]
+        is_correct = res["is_correct"]
+        counts = res["counts"]
+        question = res["question"]
+        
+        status = "✅ CORRECT" if is_correct else "❌ WRONG"
+        
+        print(f"\n--- 用户/问题 {user_index} ---")
+        print(f"  问题: {question[:60]}...")
+        print(f"  评估结果: {status}")
+        print(f"  记忆操作: ADD={counts.get('ADD', 0)}, UPDATE={counts.get('UPDATE', 0)}, DELETE={counts.get('DELETE', 0)}, NONE={counts.get('NONE', 0)}")
 
-
-# 4. 计算最终总准确率
-print("\n\n==================================================")
-print("             🎯 最终评估结果") 
-print("==================================================")
-
-if total_evaluated > 0:
-    final_accuracy = correct_count / total_evaluated
-    print(f"总评估问题数: {total_evaluated}")
-    print(f"正确回答数: {correct_count}")
-    print(f"最终总准确率: {final_accuracy:.4f} ({final_accuracy * 100:.2f}%)")
-else:
-    print("没有评估任何问题。")
-print("==================================================")
-
-# **5. 新增：打印每个用户的详细操作统计**
-print("\n\n==================================================")
-print("        📊 详细记忆操作统计 (按用户)")
-print("==================================================")
-
-for res in user_detail_results:
-    user_index = res["index"]
-    is_correct = res["is_correct"]
-    counts = res["counts"]
-    question = res["question"]
-    
-    status = "✅ CORRECT" if is_correct else "❌ WRONG"
-    
-    print(f"\n--- 用户/问题 {user_index} ---")
-    print(f"  问题: {question[:60]}...")
-    print(f"  评估结果: {status}")
-    print(f"  记忆操作: ADD={counts.get('ADD', 0)}, UPDATE={counts.get('UPDATE', 0)}, DELETE={counts.get('DELETE', 0)}, NONE={counts.get('NONE', 0)}")
-
-print("\n--- 所有用户的记忆操作总览 ---")
-print(f"  ADD (新增):    {total_memory_counts['ADD']}")
-print(f"  UPDATE (更新): {total_memory_counts['UPDATE']}")
-print(f"  DELETE (删除): {total_memory_counts['DELETE']}")
-print(f"  NONE (无操作): {total_memory_counts['NONE']}")
-print("==================================================")
+    print("\n--- 所有用户的记忆操作总览 ---")
+    print(f"  ADD (新增):    {total_memory_counts['ADD']}")
+    print(f"  UPDATE (更新): {total_memory_counts['UPDATE']}")
+    print(f"  DELETE (删除): {total_memory_counts['DELETE']}")
+    print(f"  NONE (无操作): {total_memory_counts['NONE']}")
+    print("==================================================")
