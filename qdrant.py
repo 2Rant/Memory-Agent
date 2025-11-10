@@ -65,7 +65,7 @@ def generate_response(llm_client, question, question_date, context):
 
     return response
 
-with open("./longmemeval_s_cleaned.json", "r") as f:
+with open("./data/longmemeval_s_cleaned.json", "r") as f:
     lines = json.load(f)[:2]
 
 
