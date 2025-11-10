@@ -4,7 +4,8 @@ import uuid
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
 from qdrant_client.models import PointStruct
-from utils import get_embedding, parse_messages, FACT_RETRIEVAL_PROMPT, remove_code_blocks, extract_json, get_update_memory_messages, LME_JUDGE_MODEL_TEMPLATE, LME_ANSWER_PROMPT
+from utils import get_embedding, parse_messages, FACT_RETRIEVAL_PROMPT, remove_code_blocks, extract_json, get_update_memory_messages, LME_JUDGE_MODEL_TEMPLATE, LME_ANSWER_PROMPT 
+from lme_eval import lme_grader
 from dotenv import load_dotenv
 import os
 import json
@@ -51,7 +52,7 @@ def insert(collection_name, vect_store_client, vectors, payloads=None):
     )
 
 def generate_response(llm_client, question, question_date, context):
-    prompt = LME_JUDGE_MODEL_TEMPLATE.format(
+    prompt = LME_ANSWER_PROMPT.format(
         question=question,
         question_date=question_date,
         context=context
@@ -243,7 +244,7 @@ def process_user_memory(line):
                             old_memory = result.payload.get("data", "")
                         else:
                             old_memory = ""
-                        new_created_at = result.payload.get("created_at", "") if result else ""
+                        created_at = result.payload.get("created_at", "") if result else ""
                         # new_updated_at = datetime.now(pytz.timezone('Asia/Shanghai')).isoformat()
                         new_updated_at = date_string.isoformat()
                         result.payload["data"] = action_text
@@ -317,3 +318,61 @@ def response_user(line):
     answer = response.choices[0].message.content
 
     return answer
+
+# for idx, line in enumerate(lines):
+#     print(f"\n\n==== 处理第 {idx + 1} 个用户的记忆 ====")
+#     process_user_memory(line)
+#     print(f"\n\n==== 为第 {idx + 1} 个用户生成回答 ====")
+#     answer = response_user(line)
+#     print(f"生成的回答: {answer}")
+
+
+
+# 1. 结果累加器
+evaluation_results = []
+correct_count = 0
+total_evaluated = 0
+
+with open("./data/longmemeval_s_cleaned.json", "r") as f:
+    lines = json.load(f)[:2] # 仍只处理前 2 个用户
+
+for idx, line in enumerate(lines):
+    print(f"\n\n==== 处理第 {idx + 1} 个用户的记忆 (存储阶段) ====")
+    process_user_memory(line)
+    
+    print(f"\n\n==== 为第 {idx + 1} 个用户生成回答 (检索阶段) ====")
+    answer = response_user(line)
+    golden_answer = line.get("golden_answer") # 获取黄金答案
+    question = line.get("question") # 获取问题
+
+    print(f"生成的回答: {answer}")
+    print(f"黄金答案: {golden_answer}")
+    
+    # 2. 调用 Grader 进行评估
+    is_correct = lme_grader(openai_client, question, golden_answer, answer)
+    
+    # 3. 统计结果
+    total_evaluated += 1
+    if is_correct:
+        correct_count += 1
+        evaluation_results.append(True)
+    else:
+        evaluation_results.append(False)
+
+    print(f"LLM 评估结果: {'CORRECT' if is_correct else 'WRONG'}")
+    print(f"当前累计准确率: {correct_count / total_evaluated:.4f} ({correct_count}/{total_evaluated})")
+
+
+# 4. 计算最终总准确率
+print("\n\n==================================================")
+print("             🎯 最终评估结果")
+print("==================================================")
+
+if total_evaluated > 0:
+    final_accuracy = correct_count / total_evaluated
+    print(f"总评估问题数: {total_evaluated}")
+    print(f"正确回答数: {correct_count}")
+    print(f"最终总准确率: {final_accuracy:.4f} ({final_accuracy * 100:.2f}%)")
+else:
+    print("没有评估任何问题。")
+print("==================================================")

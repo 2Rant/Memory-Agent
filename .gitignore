@@ -15,8 +15,4 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# Python 库安装目录
-# site-packages/longmemeval_s_cleaned.json
-longmemeval_s_cleaned.json
-
 data/
