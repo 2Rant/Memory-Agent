@@ -25,7 +25,7 @@ BASE_URL = os.getenv("OPENAI_BASE_URL")
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
 openai_client = OpenAI(api_key=OPENAI_API_KEY, base_url=BASE_URL)
 dimension=1536
-collection_name = "_lme"
+collection_name = "lme"
 # vect_store_client = QdrantClient(path="./qdrant_db")
 vect_store_client = QdrantClient(url=os.getenv("QDRANT_URL"),
                                   api_key=os.getenv("QDRANT_API_KEY"))
@@ -116,46 +116,17 @@ def process_user_memory_infer(line):
             
         retrieved_old_facts = []
         new_message_embeddings = {} 
-        # try:
-        #     for fact in new_retrieved_facts:
-        #         embedding_vector = get_embedding(openai_client, fact, dimension=dimension)
-        #         new_message_embeddings[fact] = embedding_vector 
-                
-        #         existing_memories = search(collection_name, vect_store_client, embedding_vector, top_k=5)
-        #         for mem in existing_memories:
-        #             retrieved_old_facts.append({"id": mem.id, "text": mem.payload.get("data", "")})
-        #             # print("mem:", mem) 
-        # except Exception as e:
-        #     print(f"生成嵌入时出错，请检查您的 API Key 和网络连接：{e}")
-
         try:
             for fact in new_retrieved_facts:
+                embedding_vector = get_embedding(openai_client, fact, dimension=dimension)
+                new_message_embeddings[fact] = embedding_vector 
                 
-                try:
-                    embedding_vector = get_embedding(openai_client, fact, dimension=dimension)
-                    new_message_embeddings[fact] = embedding_vector 
-                except Exception as e:
-                    print("==================== [OpenAI 错误] ====================")
-                    print(f"为事实 '{fact[:50]}...' 生成嵌入时失败。")
-                    print(f"错误详情: {e}")
-                    print("请检查 OpenAI API Key、Base URL 和网络连接。")
-                    print("=========================================================")
-                    # 如果嵌入失败，跳过这个事实的后续步骤
-                    continue  
-
-                try:
-                    existing_memories = search(collection_name, vect_store_client, embedding_vector, top_k=5)
-                    for mem in existing_memories:
-                        retrieved_old_facts.append({"id": mem.id, "text": mem.payload.get("data", "")})
-                except Exception as e:
-                    print("==================== [Qdrant 错误] ====================")
-                    print(f"使用新嵌入的向量搜索 Qdrant 时失败。")
-                    print(f"错误详情: {e}")
-                    print("========================================================")
-                    continue 
-
+                existing_memories = search(collection_name, vect_store_client, embedding_vector, top_k=5)
+                for mem in existing_memories:
+                    retrieved_old_facts.append({"id": mem.id, "text": mem.payload.get("data", "")})
+                    # print("mem:", mem) 
         except Exception as e:
-            print(f"处理 new_retrieved_facts 循环时遇到未知错误: {e}")
+            print(f"生成嵌入时出错，请检查您的 API Key 和网络连接：{e}")
 
         unique_data = {}
         for item in retrieved_old_facts:
@@ -172,6 +143,7 @@ def process_user_memory_infer(line):
 
         if new_retrieved_facts:
             memory_action_prompt = get_update_memory_messages(retrieved_old_facts, new_retrieved_facts)
+            # print("Memory Action Prompt:", memory_action_prompt)
             response = openai_client.chat.completions.create(
                 model=MODEL_NAME,
                 messages=[{"role": "user", "content": memory_action_prompt}],
@@ -202,12 +174,6 @@ def process_user_memory_infer(line):
                     if not action_text:
                         print("Skipping memory entry because of empty `text` field.")
                         continue
-
-                    # fix hallucination of id
-                    if temp_uuid_mapping.get(resp.get("id")) is None:
-                        for item in retrieved_old_facts:
-                            if item["text"] == resp.get("old_memory"):
-                                resp["id"] = item["id"]
                         
                     event_type = resp.get("event")
                     if event_type in operation_counts:
@@ -225,34 +191,23 @@ def process_user_memory_infer(line):
                                     payload={ "data": action_text, "created_at": date_string.isoformat()}
                                 ) ],
                         )
-                        returned_memories.append({"id": resp.get("id"), "memory": action_text, "event": event_type}) 
+                        returned_memories.append({"id": memory_id, "memory": action_text, "event": event_type}) 
                     
                     elif event_type == "UPDATE":
-
                         points_data = vect_store_client.retrieve(
                             collection_name=collection_name,
                             ids=[temp_uuid_mapping.get(resp.get("id"))],
                             with_payload=True, 
                         )
                         result = points_data[0] if points_data else None
-                        new_updated_at = date_string.isoformat()
                         if result:
                             old_memory = result.payload.get("data", "")
-                            result.payload["data"] = action_text
-                            result.payload["updated_at"] = new_updated_at
                         else:
-                            old_memory = ""      
-                        
-                        returned_memories.append( 
-                            {
-                                # "id": temp_uuid_mapping.get(resp.get("id")),
-                                "id": resp.get("id"),
-                                "memory": action_text,
-                                "event": event_type,
-                                "previous_memory": old_memory,
-                            }
-                        )
+                            old_memory = ""
 
+                        new_updated_at = date_string.isoformat()
+                        result.payload["data"] = action_text
+                        result.payload["updated_at"] = new_updated_at
                         vect_store_client.upsert(
                             collection_name=collection_name,
                             wait=True,
@@ -262,10 +217,19 @@ def process_user_memory_infer(line):
                                         payload=result.payload
                                     ) ],
                         )
+                        returned_memories.append( 
+                            {
+                                # "id": temp_uuid_mapping.get(resp.get("id"), "update_get_id_error"),
+                                "id": resp.get("id"),
+                                "memory": action_text,
+                                "event": event_type,
+                                "previous_memory": old_memory,
+                            }
+                        )
                     elif event_type == "DELETE":
-                        # if temp_uuid_mapping.get(resp.get("id")) is None:
-                        #     print(f"Warning: Attempted DELETE on unknown temporary ID: {resp.get('id')}. Skipping.")
-                        #     continue
+                        if temp_uuid_mapping.get(resp.get("id")) is None:
+                            print(f"Warning: Attempted DELETE on unknown temporary ID: {resp.get('id')}. Skipping.")
+                            continue
                         # print(f"Deleting memory with ID: {temp_uuid_mapping.get(resp.get('id'))}")
                         vect_store_client.delete(
                             collection_name=collection_name,
@@ -297,7 +261,6 @@ def process_user_memory_infer(line):
                     print(f"完整响应内容: {new_memories_with_actions}")
                     print(f"临时 UUID 映射: {temp_uuid_mapping}") 
                     print(f"检索到的旧事实: {retrieved_old_facts}")
-                    print(f"最终返回的记忆操作结果: {returned_memories}") 
                     print("==================================================")
 
         except Exception as e:

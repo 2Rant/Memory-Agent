@@ -300,7 +300,7 @@ Please note to return the IDs in the output from the input IDs only and do not g
             }
         ]
     - Retrieved facts: ["Loves chicken pizza", "Loves to play cricket with friends"]
-    - New Memory:
+    - New Memory should be:
         {
         "memory" : [
                 {
@@ -322,7 +322,28 @@ Please note to return the IDs in the output from the input IDs only and do not g
                 }
             ]
         }
-
+    - New Memory should not be:
+        {
+        "memory" : [
+                {
+                    "id" : "3",
+                    "text" : "Loves cheese and chicken pizza",
+                    "event" : "UPDATE",
+                    "old_memory" : "I really like cheese pizza"
+                },
+                {
+                    "id" : "1",
+                    "text" : "User is a software engineer",
+                    "event" : "NONE"
+                },
+                {
+                    "id" : "4",
+                    "text" : "Loves to play cricket with friends",
+                    "event" : "UPDATE",
+                    "old_memory" : "User likes to play cricket"
+                }
+            ]
+        }
 
 3. **Delete**: If the retrieved facts contain information that contradicts the information present in the memory, then you have to delete it. Or if the direction is to delete the memory, then you have to delete it.
 Please note to return the IDs in the output from the input IDs only and do not generate any new ID.
@@ -339,7 +360,7 @@ Please note to return the IDs in the output from the input IDs only and do not g
             }
         ]
     - Retrieved facts: ["Dislikes cheese pizza"]
-    - New Memory:
+    - New Memory should be:
         {
         "memory" : [
                 {
@@ -354,6 +375,21 @@ Please note to return the IDs in the output from the input IDs only and do not g
                 }
         ]
         }
+    - New Memory should not be:
+        {
+        "memory" : [
+                {
+                    "id" : "0",
+                    "text" : "Name is John",
+                    "event" : "NONE"
+                },
+                {
+                    "id" : "2",
+                    "text" : "Loves cheese pizza",
+                    "event" : "DELETE"
+                }
+        ]
+        }    
 
 4. **No Change**: If the retrieved facts contain information that is already present in the memory, then you do not need to make any changes.
 - **Example**:
@@ -502,7 +538,7 @@ def get_update_memory_messages(retrieved_old_memory_dict, response_content, cust
     {{
         "memory" : [
             {{
-                "id" : "<ID of the memory>",                # Use existing ID for updates/deletes, or new ID for additions
+                "id" : "<ID of the memory>",                # Use **existing ID** for updates/deletes, or **new ID** for additions
                 "text" : "<Content of the memory>",         # Content of the memory
                 "event" : "<Operation to be performed>",    # Must be "ADD", "UPDATE", "DELETE", or "NONE"
                 "old_memory" : "<Old memory content>"       # Required only if the event is "UPDATE"
