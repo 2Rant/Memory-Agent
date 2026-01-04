@@ -25,11 +25,13 @@ BASE_URL = os.getenv("OPENAI_BASE_URL")
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o-mini")
 openai_client = OpenAI(api_key=OPENAI_API_KEY, base_url=BASE_URL)
 dimension=1536
-collection_name = "_lme"
+collection_name = "lme"
 # vect_store_client = QdrantClient(path="./qdrant_db")
 vect_store_client = QdrantClient(url=os.getenv("QDRANT_URL"),
                                   api_key=os.getenv("QDRANT_API_KEY"))
-topk = 5
+topk = 20
+search_topk = 20
+
 system_prompt = FACT_RETRIEVAL_PROMPT
 
 
@@ -80,7 +82,7 @@ def process_user_memory_infer(line):
         date_string = datetime.strptime(date, date_format).replace(tzinfo=timezone.utc)
         
         parsed_messages = parse_messages(session) 
-        # print("parsed_messages:", parsed_messages) 
+        print("parsed_messages:", parsed_messages) 
         user_prompt = f"Input:\n{parsed_messages}"
         llm_response = openai_client.chat.completions.create(
             model=MODEL_NAME,
@@ -108,7 +110,7 @@ def process_user_memory_infer(line):
         except Exception as e:
             print(f"Error in new_retrieved_facts: {e}")
             new_retrieved_facts = []
-        # print(f"新检索到的事实: {new_retrieved_facts}") 
+        print(f"新检索到的事实: {new_retrieved_facts}") 
 
         if not new_retrieved_facts:
             # print("No new facts retrieved; skipping memory update.")
@@ -130,7 +132,6 @@ def process_user_memory_infer(line):
 
         try:
             for fact in new_retrieved_facts:
-                
                 try:
                     embedding_vector = get_embedding(openai_client, fact, dimension=dimension)
                     new_message_embeddings[fact] = embedding_vector 
@@ -140,13 +141,12 @@ def process_user_memory_infer(line):
                     print(f"错误详情: {e}")
                     print("请检查 OpenAI API Key、Base URL 和网络连接。")
                     print("=========================================================")
-                    # 如果嵌入失败，跳过这个事实的后续步骤
                     continue  
 
                 try:
-                    existing_memories = search(collection_name, vect_store_client, embedding_vector, top_k=5)
+                    existing_memories = search(collection_name, vect_store_client, embedding_vector, top_k=topk)
                     for mem in existing_memories:
-                        retrieved_old_facts.append({"id": mem.id, "text": mem.payload.get("data", "")})
+                        retrieved_old_facts.append({"id": mem.id, "text": mem.payload.get("data")})
                 except Exception as e:
                     print("==================== [Qdrant 错误] ====================")
                     print(f"使用新嵌入的向量搜索 Qdrant 时失败。")
@@ -241,7 +241,8 @@ def process_user_memory_infer(line):
                             result.payload["data"] = action_text
                             result.payload["updated_at"] = new_updated_at
                         else:
-                            old_memory = ""      
+                            old_memory = "retrieve failed"  
+                            pass # TODO: handle missing memory case    
                         
                         returned_memories.append( 
                             {
@@ -295,9 +296,10 @@ def process_user_memory_infer(line):
                     print("==================================================")
                     print(f"Error processing memory action {resp}: {e}")   
                     print(f"完整响应内容: {new_memories_with_actions}")
-                    print(f"临时 UUID 映射: {temp_uuid_mapping}") 
+                    # print(f"临时 UUID 映射: {temp_uuid_mapping}") 
+                    print(f"新检索到的事实: {new_retrieved_facts}")
                     print(f"检索到的旧事实: {retrieved_old_facts}")
-                    print(f"最终返回的记忆操作结果: {returned_memories}") 
+                    print(f"记忆操作结果: {returned_memories}") 
                     print("==================================================")
 
         except Exception as e:
@@ -314,51 +316,56 @@ def process_user_memory(line):
     returned_memories = []
     operation_counts = {"ADD": 0, "UPDATE": 0, "DELETE": 0, "NONE": 0}
     for session_id, session in enumerate(sessions):
+        print(f"Processing session {session_id + 1}/{len(sessions)}")
         date = dates[session_id] + " UTC"
         date_format = "%Y/%m/%d (%a) %H:%M UTC"
         date_string = datetime.strptime(date, date_format).replace(tzinfo=timezone.utc)
 
-        # for message in session:
-        #     message_dict = message
-        #     if isinstance(message, str):
-        #         try:
-        #             message_dict = json.loads(message)
-        #         except json.JSONDecodeError:
-        #             print(f"无法解析消息为 JSON: {message}")
-        #             continue
-
-        #     metadata = {
-        #         "created_at": date_string.isoformat(),
-        #     }
-
-        #     memory_id = str(uuid.uuid4())
-        #     if message_dict["role"] == "system":
-        #         continue
+        # for turn_id in range(0, len(session), 2):
             
-        #     metadata["role"] = message_dict["role"]
-        #     metadata["data"] = message_dict["content"]
+            # for message in session:
+            #     message_dict = message
+            #     if isinstance(message, str):
+            #         try:
+            #             message_dict = json.loads(message)
+            #         except json.JSONDecodeError:
+            #             print(f"无法解析消息为 JSON: {message}")
+            #             continue
 
-        #     msg_content = message_dict["content"]
-        #     embedding_vector = get_embedding(openai_client, msg_content, dimension=dimension)
-        #     vect_store_client.upsert(
-        #                 collection_name=collection_name, wait=True,
-        #                 points=[ PointStruct(
-        #                             id=memory_id, vector=embedding_vector, 
-        #                             payload=metadata
-        #                         ) ],
-        #                 )
-        #     operation_counts["ADD"] += 1
-        #     returned_memories.append(
-        #         {
-        #             "id": memory_id,
-        #             "memory": msg_content,
-        #             "event": "ADD",
-        #             # "actor_id": actor_name if actor_name else None,
-        #             "role": message_dict["role"],
-        #         }
-        #     )
+            #     metadata = {
+            #         "created_at": date_string.isoformat(),
+            #     }
 
+            #     memory_id = str(uuid.uuid4())
+            #     if message_dict["role"] == "system":
+            #         continue
+                
+            #     metadata["role"] = message_dict["role"]
+            #     metadata["data"] = message_dict["content"]
+
+            #     msg_content = message_dict["content"]
+            #     embedding_vector = get_embedding(openai_client, msg_content, dimension=dimension)
+            #     vect_store_client.upsert(
+            #                 collection_name=collection_name, wait=True,
+            #                 points=[ PointStruct(
+            #                             id=memory_id, vector=embedding_vector, 
+            #                             payload=metadata
+            #                         ) ],
+            #                 )
+            #     operation_counts["ADD"] += 1
+            #     returned_memories.append(
+            #         {
+            #             "id": memory_id,
+            #             "memory": msg_content,
+            #             "event": "ADD",
+            #             # "actor_id": actor_name if actor_name else None,
+            #             "role": message_dict["role"],
+            #         }
+            #     )
+
+        # parsed_messages = parse_messages(session[turn_id:turn_id+2])
         parsed_messages = parse_messages(session)
+        # print("parsed_messages:", parsed_messages)
         user_prompt = f"Input:\n{parsed_messages}"
         llm_response = openai_client.chat.completions.create(
             model=MODEL_NAME,
@@ -386,7 +393,10 @@ def process_user_memory(line):
         except Exception as e:
             print(f"Error in new_retrieved_facts: {e}")
             new_retrieved_facts = []
-        # print(f"新检索到的事实: {new_retrieved_facts}")
+        print("="*40)
+        print("parsed_messages:", parsed_messages)
+        print(f"新检索到的事实: {new_retrieved_facts}")
+        print("="*40)
         for fact in new_retrieved_facts:
             embedding_vector = get_embedding(openai_client, fact, dimension=dimension)
             memory_id = str(uuid.uuid4())
@@ -419,7 +429,7 @@ def response_user(line):
     question_date_string = datetime.strptime(question_date, question_date_format).replace(tzinfo=timezone.utc)
     question = line.get("question")
     question_vector = get_embedding(openai_client, question, dimension=dimension)
-    retrieved_memories = search(collection_name, vect_store_client, question_vector, top_k=topk)
+    retrieved_memories = search(collection_name, vect_store_client, question_vector, top_k=search_topk)
     # context = "\n".join([mem.payload.get("data", "") for mem in retrieved_memories])
     memories_str = (
             "\n".join(
@@ -430,7 +440,7 @@ def response_user(line):
     response = generate_response(openai_client, question, question_date_string, memories_str)
     answer = response.choices[0].message.content
 
-    return answer
+    return memories_str, answer
 
 def process_and_evaluate_user(line, user_index, client, infer):
     """
@@ -443,7 +453,7 @@ def process_and_evaluate_user(line, user_index, client, infer):
         else:
             memory_counts = process_user_memory(line)
         
-        answer = response_user(line)
+        retrieved_memories, answer = response_user(line)
         golden_answer = line.get("answer") 
         question = line.get("question")
         
@@ -455,7 +465,8 @@ def process_and_evaluate_user(line, user_index, client, infer):
             "counts": memory_counts,
             "question": question,
             "answer": answer,
-            "golden_answer": golden_answer
+            "golden_answer": golden_answer,
+            "retrieved_memories": retrieved_memories,
         }
     except Exception as e:
         print(f"Error processing user {user_index} ({line.get('question', 'Unknown')[:20]}...): {e}")
@@ -488,7 +499,7 @@ if __name__ == "__main__":
     user_detail_results = [] 
     total_memory_counts = {"ADD": 0, "UPDATE": 0, "DELETE": 0, "NONE": 0}
     
-    MAX_WORKERS = 10
+    MAX_WORKERS = 30
     infer = True
 
     futures = []
@@ -541,10 +552,12 @@ if __name__ == "__main__":
         question = res["question"]
         answer = res.get("answer", "N/A")
         golden_answer = res.get("golden_answer", "N/A")
+        retrieved_memories = res.get("retrieved_memories", "")
         status = "✅ CORRECT" if is_correct else "❌ WRONG"
         
         print(f"\n--- 用户/问题 {user_index} ---")
-        print(f"  问题: {question[:60]}...")
+        print(f"  问题: {question}...")
+        print(f"  检索topk={topk}记忆: {retrieved_memories}...")
         print(f"  模型回答: {answer}...")
         print(f"  标准答案: {golden_answer}...")
         print(f"  评估结果: {status}")

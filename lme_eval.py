@@ -13,17 +13,21 @@ def lme_grader(llm_client, question, golden_answer, response):
         question=question, golden_answer=golden_answer, response=response
     )
 
-    response = llm_client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": judge_prompt},
-        ],
-        temperature=0,
-    )
+    try:
+        response = llm_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": judge_prompt},
+            ],
+            temperature=0,
+        )
 
-    message_content = response.choices[0].message.content
-    label = json.loads(message_content)["label"]
-    parsed = LLMGrade(llm_judgment=label, llm_reasoning="")
+        message_content = response.choices[0].message.content
+        label = json.loads(message_content)["label"]
+        parsed = LLMGrade(llm_judgment=label, llm_reasoning="")
 
-    return parsed.llm_judgment.strip().lower() == "correct"
+        return parsed.llm_judgment.strip().lower() == "correct"
+    except Exception as e:
+        print(f"评估答案正确性时出错: {e}")
+        return False
