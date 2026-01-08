@@ -16,7 +16,8 @@ __pycache__/
 Thumbs.db
 
 model/
-# data/
+data/
 test
 
+*.tar.gz
 *.log

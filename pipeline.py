@@ -246,9 +246,9 @@ class MemoryPipeline:
         dataset_suffix = f"_{dataset_name}" if dataset_name else ""
         full_suffix = f"{base_suffix}{dataset_suffix}"
         
-        self.mem_col = f"memories{full_suffix}"
-        self.fact_col = f"facts{full_suffix}"
-        self.chunk_col = f"chunks{full_suffix}"
+        self.mem_col = f"memories{full_suffix}_v1"
+        self.fact_col = f"facts{full_suffix}_v1"
+        self.chunk_col = f"chunks{full_suffix}_v1"
         
         self.dim = vector_db_config.dimension  # Save dimension as instance variable
         # 初始化操作次数计数器
