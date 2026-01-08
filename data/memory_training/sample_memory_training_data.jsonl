@@ -1,0 +1,15 @@
+{"text": "I just got a new dog named Max. He's a golden retriever puppy.", "expected_operation": "ADD"}
+{"text": "Max is now 6 months old and loves playing fetch.", "expected_operation": "UPDATE"}
+{"text": "I used to have a cat named Whiskers, but she passed away last year.", "expected_operation": "ADD"}
+{"text": "Max is actually a labrador retriever, not a golden retriever.", "expected_operation": "UPDATE"}
+{"text": "I no longer have any pets at home.", "expected_operation": "DELETE"}
+{"text": "I enjoy hiking and camping in the mountains.", "expected_operation": "ADD"}
+{"text": "My favorite hiking trail is in Yosemite National Park.", "expected_operation": "ADD"}
+{"text": "I recently started learning to play the guitar.", "expected_operation": "ADD"}
+{"text": "I've been practicing guitar for 3 months now and can play several songs.", "expected_operation": "UPDATE"}
+{"text": "I used to live in New York City, but now I live in San Francisco.", "expected_operation": "UPDATE"}
+{"text": "I work as a software engineer at a tech company.", "expected_operation": "ADD"}
+{"text": "I specialize in machine learning and artificial intelligence.", "expected_operation": "UPDATE"}
+{"text": "I enjoy reading science fiction books in my free time.", "expected_operation": "ADD"}
+{"text": "My favorite author is Isaac Asimov.", "expected_operation": "ADD"}
+{"text": "I've read all of Isaac Asimov's Foundation series.", "expected_operation": "UPDATE"}

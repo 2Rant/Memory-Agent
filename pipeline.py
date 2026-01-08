@@ -85,7 +85,7 @@ DO NOT output raw JSON text. You MUST use the provided function tools.
      - Action: `infer_memory(source_memory_ids=["2", "3"], inference_content="...")`
 
 5. **NOOP (no_operation)**
-   - **Condition**: If the fact is redundant (already exactly covered by memory) or trivial.
+   - **Condition**: If the fact is redundant (already exactly covered by memory), similar to existing facts associated with the retrieved memories, or trivial.
 
 [STRICT ID RULES]
 - When calling `update_memory` or `delete_memory`, **ONLY** use the string integer IDs (e.g., "0", "1", "2") found in the [EXISTING MEMORIES] list.
@@ -160,7 +160,7 @@ MEMORY_TOOLS = [
         "type": "function",
         "function": {
             "name": "no_operation",
-            "description": "No action needed if the fact is redundant (already exactly covered by memory) or trivial.",
+            "description": "No action needed if the fact is redundant (already exactly covered by memory or its associated facts).",
             "parameters": {
                 "type": "object",
                 "properties": {"reason": {"type": "string", "description": "The reason for no operation."}},
@@ -267,36 +267,40 @@ class MemoryPipeline:
             self.client.drop_collection(self.chunk_col)
             print("数据库清空完成.")
         
-        # 直接创建或获取集合，不进行存在性检查
-        # 创建集合的逻辑已经包含了如果集合存在则跳过的处理
+        # 检查并创建集合
         
         # 处理 memories 集合
         if hasattr(self.client, 'DataType'):
-            # 这是 Milvus 客户端，创建完整的schema
-            s = self.client.create_schema(auto_id=False, enable_dynamic_field=True)
-            s.add_field("memory_id", self.client.DataType.VARCHAR, max_length=64, is_primary=True)
-            s.add_field("embedding", self.client.DataType.FLOAT_VECTOR, dim=dim)
-            s.add_field("content", self.client.DataType.VARCHAR, max_length=65535)
-            s.add_field("user_id", self.client.DataType.VARCHAR, max_length=64)
-            s.add_field("status", self.client.DataType.VARCHAR, max_length=16)
-            s.add_field("created_at", self.client.DataType.INT64)
-            s.add_field("updated_at", self.client.DataType.INT64)
-            s.add_field("relations", self.client.DataType.JSON) 
-            
-            # 创建集合
-            self.client.create_collection(self.mem_col, schema=s)
-            print(f"Collection '{self.mem_col}' created or exists.")
-            
-            # 直接创建索引，不检查索引是否存在
-            # Milvus的create_index方法会在索引已存在时自动跳过或返回成功
-            try:
-                print(f"为集合 '{self.mem_col}' 创建索引...")
-                idx_params = self.client.prepare_index_params()
-                idx_params.add_index(field_name="embedding", index_type="IVF_FLAT", metric_type="COSINE", params={"nlist": 128})
-                self.client.create_index(self.mem_col, index_params=idx_params)
-                print(f"集合 '{self.mem_col}' 的索引创建成功或已存在")
-            except Exception as e:
-                print(f"创建索引失败: {e}")
+            # 这是 Milvus 客户端
+            # 检查集合是否存在
+            if not self.client.has_collection(self.mem_col):
+                # 创建完整的schema
+                s = self.client.create_schema(auto_id=False, enable_dynamic_field=True)
+                s.add_field("memory_id", self.client.DataType.VARCHAR, max_length=64, is_primary=True)
+                s.add_field("embedding", self.client.DataType.FLOAT_VECTOR, dim=dim)
+                s.add_field("content", self.client.DataType.VARCHAR, max_length=65535)
+                s.add_field("user_id", self.client.DataType.VARCHAR, max_length=64)
+                s.add_field("status", self.client.DataType.VARCHAR, max_length=16)
+                s.add_field("created_at", self.client.DataType.INT64)
+                s.add_field("updated_at", self.client.DataType.INT64)
+                s.add_field("relations", self.client.DataType.JSON) 
+                
+                # 创建集合
+                self.client.create_collection(self.mem_col, schema=s)
+                print(f"Collection '{self.mem_col}' created.")
+                
+                # 直接创建索引，不检查索引是否存在
+                # Milvus的create_index方法会在索引已存在时自动跳过或返回成功
+                try:
+                    print(f"为集合 '{self.mem_col}' 创建索引...")
+                    idx_params = self.client.prepare_index_params()
+                    idx_params.add_index(field_name="embedding", index_type="IVF_FLAT", metric_type="COSINE", params={"nlist": 128})
+                    self.client.create_index(self.mem_col, index_params=idx_params)
+                    print(f"集合 '{self.mem_col}' 的索引创建成功或已存在")
+                except Exception as e:
+                    print(f"创建索引失败: {e}")
+            else:
+                print(f"Collection '{self.mem_col}' already exists, skipping creation.")
         else:
             # 非Milvus客户端，直接创建集合
             self.client.create_collection(self.mem_col)
@@ -304,30 +308,35 @@ class MemoryPipeline:
         
         # 处理 facts 集合
         if hasattr(self.client, 'DataType'):
-            s = self.client.create_schema(auto_id=False, enable_dynamic_field=True)
-            s.add_field("fact_id", self.client.DataType.VARCHAR, max_length=64, is_primary=True)
-            s.add_field("linked_memory_ids", self.client.DataType.JSON)
-            s.add_field("linked_chunk_id", self.client.DataType.VARCHAR, max_length=64)
-            s.add_field("text", self.client.DataType.VARCHAR, max_length=65535)
-            s.add_field("details", self.client.DataType.JSON)  # 添加details字段
-            s.add_field("timestamp", self.client.DataType.INT64)
-            s.add_field("user_id", self.client.DataType.VARCHAR, max_length=64)  # 添加user_id字段
-            s.add_field("embedding", self.client.DataType.FLOAT_VECTOR, dim=dim)
-            
-            # 创建集合
-            self.client.create_collection(self.fact_col, schema=s)
-            print(f"Collection '{self.fact_col}' created or exists.")
-            
-            # 直接创建索引，不检查索引是否存在
-            # Milvus的create_index方法会在索引已存在时自动跳过或返回成功
-            try:
-                print(f"为集合 '{self.fact_col}' 创建索引...")
-                idx_params = self.client.prepare_index_params()
-                idx_params.add_index(field_name="embedding", index_type="IVF_FLAT", metric_type="COSINE", params={"nlist": 128})
-                self.client.create_index(self.fact_col, index_params=idx_params)
-                print(f"集合 '{self.fact_col}' 的索引创建成功或已存在")
-            except Exception as e:
-                print(f"创建索引失败: {e}")
+            # 这是 Milvus 客户端
+            # 检查集合是否存在
+            if not self.client.has_collection(self.fact_col):
+                s = self.client.create_schema(auto_id=False, enable_dynamic_field=True)
+                s.add_field("fact_id", self.client.DataType.VARCHAR, max_length=64, is_primary=True)
+                s.add_field("linked_memory_ids", self.client.DataType.JSON)
+                s.add_field("linked_chunk_id", self.client.DataType.VARCHAR, max_length=64)
+                s.add_field("text", self.client.DataType.VARCHAR, max_length=65535)
+                s.add_field("details", self.client.DataType.JSON)  # 添加details字段
+                s.add_field("timestamp", self.client.DataType.INT64)
+                s.add_field("user_id", self.client.DataType.VARCHAR, max_length=64)  # 添加user_id字段
+                s.add_field("embedding", self.client.DataType.FLOAT_VECTOR, dim=dim)
+                
+                # 创建集合
+                self.client.create_collection(self.fact_col, schema=s)
+                print(f"Collection '{self.fact_col}' created.")
+                
+                # 直接创建索引，不检查索引是否存在
+                # Milvus的create_index方法会在索引已存在时自动跳过或返回成功
+                try:
+                    print(f"为集合 '{self.fact_col}' 创建索引...")
+                    idx_params = self.client.prepare_index_params()
+                    idx_params.add_index(field_name="embedding", index_type="IVF_FLAT", metric_type="COSINE", params={"nlist": 128})
+                    self.client.create_index(self.fact_col, index_params=idx_params)
+                    print(f"集合 '{self.fact_col}' 的索引创建成功或已存在")
+                except Exception as e:
+                    print(f"创建索引失败: {e}")
+            else:
+                print(f"Collection '{self.fact_col}' already exists, skipping creation.")
         else:
             # 非Milvus客户端，直接创建集合
             self.client.create_collection(self.fact_col)
@@ -335,26 +344,31 @@ class MemoryPipeline:
         
         # 处理 chunks 集合
         if hasattr(self.client, 'DataType'):
-            s = self.client.create_schema(auto_id=False, enable_dynamic_field=True)
-            s.add_field("chunk_id", self.client.DataType.VARCHAR, max_length=64, is_primary=True)
-            s.add_field("text", self.client.DataType.VARCHAR, max_length=65535)
-            s.add_field("timestamp", self.client.DataType.INT64)
-            s.add_field("embedding", self.client.DataType.FLOAT_VECTOR, dim=dim)
-            
-            # 创建集合
-            self.client.create_collection(self.chunk_col, schema=s)
-            print(f"Collection '{self.chunk_col}' created or exists.")
-            
-            # 直接创建索引，不检查索引是否存在
-            # Milvus的create_index方法会在索引已存在时自动跳过或返回成功
-            try:
-                print(f"为集合 '{self.chunk_col}' 创建索引...")
-                idx_params = self.client.prepare_index_params()
-                idx_params.add_index(field_name="embedding", index_type="IVF_FLAT", metric_type="COSINE", params={"nlist": 128})
-                self.client.create_index(self.chunk_col, index_params=idx_params)
-                print(f"集合 '{self.chunk_col}' 的索引创建成功或已存在")
-            except Exception as e:
-                print(f"创建索引失败: {e}")
+            # 这是 Milvus 客户端
+            # 检查集合是否存在
+            if not self.client.has_collection(self.chunk_col):
+                s = self.client.create_schema(auto_id=False, enable_dynamic_field=True)
+                s.add_field("chunk_id", self.client.DataType.VARCHAR, max_length=64, is_primary=True)
+                s.add_field("text", self.client.DataType.VARCHAR, max_length=65535)
+                s.add_field("timestamp", self.client.DataType.INT64)
+                s.add_field("embedding", self.client.DataType.FLOAT_VECTOR, dim=dim)
+                
+                # 创建集合
+                self.client.create_collection(self.chunk_col, schema=s)
+                print(f"Collection '{self.chunk_col}' created.")
+                
+                # 直接创建索引，不检查索引是否存在
+                # Milvus的create_index方法会在索引已存在时自动跳过或返回成功
+                try:
+                    print(f"为集合 '{self.chunk_col}' 创建索引...")
+                    idx_params = self.client.prepare_index_params()
+                    idx_params.add_index(field_name="embedding", index_type="IVF_FLAT", metric_type="COSINE", params={"nlist": 128})
+                    self.client.create_index(self.chunk_col, index_params=idx_params)
+                    print(f"集合 '{self.chunk_col}' 的索引创建成功或已存在")
+                except Exception as e:
+                    print(f"创建索引失败: {e}")
+            else:
+                print(f"Collection '{self.chunk_col}' already exists, skipping creation.")
         else:
             # 非Milvus客户端，直接创建集合
             self.client.create_collection(self.chunk_col)
@@ -378,7 +392,7 @@ class MemoryPipeline:
             print("All collections loaded successfully.")
 
     # --- Step 1: Extract ---
-    def step_extract(self, chunk_text: str, extract_mode: str = "whole") -> Dict:
+    def step_extract(self, chunk_text: str, extract_mode: str = "whole", timestamp: int = None) -> Dict:
         """
         从对话中提取事实
         
@@ -387,11 +401,16 @@ class MemoryPipeline:
             extract_mode: 提取模式，可选值：
                 - "whole": 对整个chunk进行提取
                 - "turn": 按轮次提取，每轮user-assistant对话单独提取
+            timestamp: 时间戳，可选，默认使用当前时间
         
         Returns:
             包含提取事实的字典
         """
         # print(f"\n👀 [1. Extract] Processing: '{chunk_text}'")
+        
+        # 如果没有提供timestamp，使用当前时间
+        if timestamp is None:
+            timestamp = int(time.time())
         
         # 如果是按轮次提取，先解析对话轮次
         if extract_mode == "turn":
@@ -414,13 +433,13 @@ class MemoryPipeline:
                             turn_facts = self._extract_single_turn(turn_text)
                             all_facts.extend(turn_facts)
                     
-                    return {"chunk_id": str(uuid.uuid4()), "chunk_text": chunk_text, "new_facts": all_facts, "timestamp": int(time.time())}
+                    return {"chunk_id": str(uuid.uuid4()), "chunk_text": chunk_text, "new_facts": all_facts, "timestamp": timestamp}
             except Exception as e:
                 print(f"解析对话轮次失败，回退到whole模式: {e}")
         
         # 默认模式：对整个chunk进行提取
         facts = self._extract_single_turn(chunk_text)
-        return {"chunk_id": str(uuid.uuid4()), "chunk_text": chunk_text, "new_facts": facts, "timestamp": int(time.time())}
+        return {"chunk_id": str(uuid.uuid4()), "chunk_text": chunk_text, "new_facts": facts, "timestamp": timestamp}
     
     def _extract_single_turn(self, text: str) -> List[Dict]:
         """
@@ -493,53 +512,20 @@ class MemoryPipeline:
                 except Exception as e:
                     print(f"   ⚠️ Error retrieving related facts: {e}")
             
-            # 检索这些事实关联的其他记忆
-            if related_facts:
-                # 获取所有关联的记忆ID
-                all_related_memory_ids = set()
-                for fact in related_facts:
-                    linked_mem_ids = fact.get("linked_memory_ids", [])
-                    all_related_memory_ids.update(linked_mem_ids)
-                
-                # 移除已经在候选列表中的记忆ID
-                existing_memory_ids = set([mem['memory_id'] for mem in candidates])
-                new_memory_ids = all_related_memory_ids - existing_memory_ids
-                
-                if new_memory_ids:
-                    # 构建查询条件，查找这些新的记忆
-                    quoted_new_ids = [f'"{mem_id}"' for mem_id in new_memory_ids]
-                    mem_filter = f"status == 'active' and user_id == '{user_id}' and memory_id in [{','.join(quoted_new_ids)}]"
-                    
-                    try:
-                        additional_memories = self.client.query(
-                            collection_name=self.mem_col,
-                            filter=mem_filter,
-                            output_fields=["content", "memory_id", "created_at"]
-                        )
-                        
-                        # 将这些额外的记忆添加到候选列表中
-                        candidates.extend(additional_memories)
-                    except Exception as e:
-                        print(f"   ⚠️ Error retrieving additional memories: {e}")
-            
-            # 对候选记忆进行去重
-            unique_candidates = []
-            seen_memory_ids = set()
+            # 将related_facts添加到每个memory对象中
             for mem in candidates:
                 mem_id = mem['memory_id']
-                if mem_id not in seen_memory_ids:
-                    seen_memory_ids.add(mem_id)
-                    unique_candidates.append(mem)
+                mem['related_facts'] = [f for f in related_facts if mem_id in f.get('linked_memory_ids', [])]
             
             context_bundles.append({
                 "new_fact": fact,
-                "candidates": unique_candidates
+                "candidates": candidates
             })
             
         return context_bundles
 
     # --- Step 3: Decide (With ID Mapping) ---
-    def step_decide(self, extract_result: Dict, context_bundles: List[Dict], user_id: str = 'default') -> List[Dict]:
+    def step_decide(self, extract_result: Dict, context_bundles: List[Dict], user_id: str = 'default', training_mode: bool = False) -> List[Dict]:
         all_new_facts = extract_result['new_facts']
         
         # 1. 合并去重 Candidates
@@ -549,7 +535,8 @@ class MemoryPipeline:
                 temp_mem_storage[mem['memory_id']] = mem
         
         unique_memories_list = list(temp_mem_storage.values())
-        print(f"🧠 [3. Manager] Global Decide: {len(all_new_facts)} facts vs {len(unique_memories_list)} memories.")
+        if not training_mode:
+            print(f"🧠 [3. Manager] Global Decide: {len(all_new_facts)} facts vs {len(unique_memories_list)} memories.")
 
         # 🌟 2. 构造 ID 映射 (Mapping Logic)
         uuid_mapping = {}  # { "0": "real-uuid", "1": "real-uuid" }
@@ -562,7 +549,28 @@ class MemoryPipeline:
                 simple_id = str(idx)
                 real_uuid = mem['memory_id']
                 uuid_mapping[simple_id] = real_uuid
-                candidates_str += f"[Memory Item ID: {simple_id}]\n- Content: {mem['content']}\n\n"
+                candidates_str += f"[Memory Item ID: {simple_id}]\n- Content: {mem['content']}\n"
+                
+                # 添加关联的facts
+                related_facts = mem.get('related_facts', [])
+                if related_facts:
+                    candidates_str += "- Related Facts:\n"
+                    for fact_idx, fact in enumerate(related_facts):
+                        candidates_str += f"  - Fact {fact_idx + 1}: {fact['text']}\n"
+                        # 添加fact的details
+                        details = fact.get('details', [])
+                        if details:
+                            if isinstance(details, list):
+                                for detail in details:
+                                    if isinstance(detail, dict):
+                                        detail_str = ", ".join([f"{k}: {v}" for k, v in detail.items()])
+                                        candidates_str += f"    Detail: {detail_str}\n"
+                                    else:
+                                        candidates_str += f"    Detail: {detail}\n"
+                            elif isinstance(details, dict):
+                                detail_str = ", ".join([f"{k}: {v}" for k, v in details.items()])
+                                candidates_str += f"    Detail: {detail_str}\n"
+                candidates_str += "\n"
 
         # 构造最终 Prompt
         system_msg = MEMORY_MANAGER_PROMPT
@@ -606,7 +614,7 @@ class MemoryPipeline:
             
             # 拼接完整的思考过程
             thinking_process = ''.join(collected_messages)
-            if thinking_process:
+            if thinking_process and not training_mode:
                 print(f"\n   🧠 LLM思考过程:")
                 print(f"   {thinking_process}")
             
@@ -624,12 +632,14 @@ class MemoryPipeline:
             
             # 检查响应结构是否完整
             if not response.choices or len(response.choices) == 0:
-                print(f"   ⚠️ Warning: No choices in response")
+                if not training_mode:
+                    print(f"   ⚠️ Warning: No choices in response")
                 return []
             
             choice = response.choices[0]
             if not hasattr(choice, 'message') or not choice.message:
-                print(f"   ⚠️ Warning: No message in choice")
+                if not training_mode:
+                    print(f"   ⚠️ Warning: No message in choice")
                 return []
             
             tool_calls = choice.message.tool_calls
@@ -638,7 +648,7 @@ class MemoryPipeline:
             # 🌟 辅助函数: 还原 ID
             def resolve_id(simple_id):
                 real = uuid_mapping.get(str(simple_id))
-                if not real:
+                if not real and not training_mode:
                     print(f"   ⚠️ Warning: LLM hallucinated ID '{simple_id}', ignoring.")
                 return real
 
@@ -647,7 +657,8 @@ class MemoryPipeline:
                     func_name = tool_call.function.name
                     args = json.loads(tool_call.function.arguments)
                     
-                    print(f"   🤖 Raw Action: {func_name} | Args: {args}")
+                    if not training_mode:
+                        print(f"   🤖 Raw Action: {func_name} | Args: {args}")
                     decision = {"action": "NOOP"}
 
                     if func_name == "create_memory":
@@ -707,19 +718,74 @@ class MemoryPipeline:
                     if decision["action"] != "NOOP" or "reason" in decision:
                         all_decisions.append(decision)
                 except Exception as e:
-                    print(f"   ⚠️ Error processing tool call: {e}")
+                    if not training_mode:
+                        print(f"   ⚠️ Error processing tool call: {e}")
                     continue
 
         except Exception as e:
-            print(f"   ⚠️ Decision Error: {e}")
+            if not training_mode:
+                print(f"   ⚠️ Decision Error: {e}")
         
         return all_decisions
+        
+    # --- Batch Processing for Training with GRPO Support ---
+    def batch_process(self, batch_data: List[Dict], user_id: str = 'default', grpo_compatible: bool = True) -> List[Dict]:
+        """
+        Batch processing for memory management training with GRPO compatibility.
+        
+        Args:
+            batch_data (List[Dict]): List of input data for batch processing.
+            user_id (str, optional): User ID for memory operations. Defaults to 'default'.
+            grpo_compatible (bool, optional): Whether to return GRPO-compatible format. Defaults to True.
+            
+        Returns:
+            List[Dict]: List of results for each input in the batch.
+        """
+        results = []
+        
+        for data in batch_data:
+            # Extract facts from input text
+            extract_result = self.step_extract(data['text'], extract_mode='whole')
+            
+            # Retrieve relevant memories
+            context_bundles = self.step_retrieve(extract_result, limit=3, user_id=user_id)
+            
+            # Make decisions (memory operations) in training mode
+            decisions = self.step_decide(extract_result, context_bundles, user_id=user_id, training_mode=True)
+            
+            # Execute decisions
+            self.step_execute(decisions, extract_result, user_id=user_id)
+            
+            if grpo_compatible:
+                # Format result for GRPO training
+                result = {
+                    'input': data['text'],
+                    'extract_result': extract_result,
+                    'decisions': decisions,
+                    # Add GRPO-specific fields
+                    'memory_operations': [d['action'] for d in decisions if d['action'] != 'NOOP'],
+                    'memory_contents': [d.get('summary', '') for d in decisions if d['action'] != 'NOOP'],
+                    # Ensure we have the expected_operation if provided in data
+                    'expected_operation': data.get('expected_operation', '')
+                }
+            else:
+                # Standard format for non-GRPO training
+                result = {
+                    'input': data['text'],
+                    'extract_result': extract_result,
+                    'decisions': decisions
+                }
+            
+            results.append(result)
+        
+        return results
 
     # ==========================================
     # Step 4: Execute (Modified for Fact Inheritance)
     # ==========================================
     def step_execute(self, decisions: List[Dict], extract_result: Dict, user_id: str = 'default'):
-        ts = int(time.time())
+        # 使用extract_result中的timestamp，而不是当前时间
+        ts = extract_result['timestamp']
         chunk_id = extract_result['chunk_id']
         all_new_facts = extract_result['new_facts']
         
@@ -888,6 +954,9 @@ class MemoryPipeline:
                                         text = fact.get("text", "")
                                         details = fact.get("details", [])
                                         fact["embedding"] = self._generate_fact_embedding(text, details)
+                                    # 确保facts包含user_id字段
+                                    if "user_id" not in fact:
+                                        fact["user_id"] = user_id
                                     updated_rows.append(fact)
                             
                             # 写回数据库 (Upsert)
@@ -1159,8 +1228,8 @@ class MemoryPipeline:
         extract_result['new_facts'] = processed_facts
         return extract_result
     
-    def process(self, text, retrieve_limit: int = 3, extract_mode: str = "whole", user_id: str = 'default', similarity_threshold: float = None):
-        res = self.step_extract(text, extract_mode=extract_mode)
+    def process(self, text, retrieve_limit: int = 3, extract_mode: str = "whole", user_id: str = 'default', similarity_threshold: float = None, timestamp: int = None):
+        res = self.step_extract(text, extract_mode=extract_mode, timestamp=timestamp)
         if not res['new_facts']: return
         
         # 预处理事实，检查是否已存在
@@ -1188,12 +1257,14 @@ class MemoryPipeline:
             date = dates[session_id] + " UTC"
             date_format = "%Y/%m/%d (%a) %H:%M UTC"
             date_string = datetime.strptime(date, date_format).replace(tzinfo=timezone.utc)
+            # 生成timestamp
+            timestamp = int(date_string.timestamp())
             
             parsed_messages = parse_messages(session)
             print(f"处理会话 {session_id + 1}/{len(sessions)}: {dates[session_id]}")
             
-            # 使用现有的process方法处理会话消息，传递user_id和similarity_threshold
-            self.process(parsed_messages, retrieve_limit=retrieve_limit, extract_mode=extract_mode, user_id=user_id, similarity_threshold=similarity_threshold)
+            # 使用现有的process方法处理会话消息，传递user_id、similarity_threshold和timestamp
+            self.process(parsed_messages, retrieve_limit=retrieve_limit, extract_mode=extract_mode, user_id=user_id, similarity_threshold=similarity_threshold, timestamp=timestamp)
         
         # 返回操作次数统计
         return self.operation_counts
