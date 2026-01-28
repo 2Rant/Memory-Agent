@@ -21,3 +21,8 @@ test
 
 *.tar.gz
 *.log
+
+clear_databases_simple.py
+filter_data_by_type.py
+generate_session_qa.py
+list_milvus_collections.py

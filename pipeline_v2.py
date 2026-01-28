@@ -298,7 +298,7 @@ class MemoryPipeline:
         dataset_suffix = f"_{dataset_name}" if dataset_name else ""
         full_suffix = f"{base_suffix}{dataset_suffix}"
         
-        self.mem_col = f"memories{full_suffix}"
+        self.semantic_col = f"memories{full_suffix}"
         self.fact_col = f"facts{full_suffix}"
         self.chunk_col = f"chunks{full_suffix}"
         
@@ -314,7 +314,7 @@ class MemoryPipeline:
         if clear_db:
             print("正在清空数据库...")
             # 直接删除集合，不检查存在性
-            self.client.drop_collection(self.mem_col)
+            self.client.drop_collection(self.semantic_col)
             self.client.drop_collection(self.fact_col)
             self.client.drop_collection(self.chunk_col)
             print("数据库清空完成.")
@@ -336,23 +336,23 @@ class MemoryPipeline:
             s.add_field("relations", self.client.DataType.JSON) 
             
             # 创建集合
-            self.client.create_collection(self.mem_col, schema=s)
-            print(f"Collection '{self.mem_col}' created or exists.")
+            self.client.create_collection(self.semantic_col, schema=s)
+            print(f"Collection '{self.semantic_col}' created or exists.")
             
             # 直接创建索引，不检查索引是否存在
             # Milvus的create_index方法会在索引已存在时自动跳过或返回成功
             try:
-                print(f"为集合 '{self.mem_col}' 创建索引...")
+                print(f"为集合 '{self.semantic_col}' 创建索引...")
                 idx_params = self.client.prepare_index_params()
                 idx_params.add_index(field_name="embedding", index_type="IVF_FLAT", metric_type="COSINE", params={"nlist": 128})
-                self.client.create_index(self.mem_col, index_params=idx_params)
-                print(f"集合 '{self.mem_col}' 的索引创建成功或已存在")
+                self.client.create_index(self.semantic_col, index_params=idx_params)
+                print(f"集合 '{self.semantic_col}' 的索引创建成功或已存在")
             except Exception as e:
                 print(f"创建索引失败: {e}")
         else:
             # 非Milvus客户端，直接创建集合
-            self.client.create_collection(self.mem_col)
-            print(f"Collection '{self.mem_col}' created or exists.")
+            self.client.create_collection(self.semantic_col)
+            print(f"Collection '{self.semantic_col}' created or exists.")
         
         # 处理 facts 集合
         if hasattr(self.client, 'DataType'):
@@ -419,8 +419,8 @@ class MemoryPipeline:
         # 加载集合（Qdrant 不需要显式加载）
         if hasattr(self.client, 'load_collection'):
             # 为每个集合创建索引后直接加载
-            print(f"加载集合 '{self.mem_col}'...")
-            self.client.load_collection(self.mem_col)
+            print(f"加载集合 '{self.semantic_col}'...")
+            self.client.load_collection(self.semantic_col)
             
             print(f"加载集合 '{self.fact_col}'...")
             self.client.load_collection(self.fact_col)
@@ -521,7 +521,7 @@ class MemoryPipeline:
             # 1. 搜索相关的memories
             print(f"   Searching memories for fact: {fact['text'][:50]}...")
             mem_res = self.client.search(
-                self.mem_col, [query_vec], filter=f"status == 'active' and user_id == '{user_id}'", limit=limit,
+                self.semantic_col, [query_vec], filter=f"status == 'active' and user_id == '{user_id}'", limit=limit,
                 output_fields=["content", "memory_id", "created_at"],
                 similarity_threshold=similarity_threshold
             )
@@ -581,7 +581,7 @@ class MemoryPipeline:
                     
                     try:
                         additional_memories = self.client.query(
-                            collection_name=self.mem_col,
+                            collection_name=self.semantic_col,
                             filter=mem_filter,
                             output_fields=["content", "memory_id", "created_at"]
                         )
@@ -1020,7 +1020,7 @@ class MemoryPipeline:
                 
                 # 查询旧的memory内容
                 old_memories = self.client.query(
-                    collection_name=self.mem_col,
+                    collection_name=self.semantic_col,
                     filter=f"memory_id == '{target_mem_id}'",
                     output_fields=["content", "created_at"]
                 )
@@ -1055,7 +1055,7 @@ class MemoryPipeline:
                     mem_filter = f"status == 'active' and memory_id in [{','.join(quoted_source_ids)}]"
                     try:
                         source_mems = self.client.query(
-                            collection_name=self.mem_col,
+                            collection_name=self.semantic_col,
                             filter=mem_filter,
                             output_fields=["content", "memory_id", "created_at", "user_id"]
                         )
@@ -1349,7 +1349,7 @@ class MemoryPipeline:
                     print(f"   💾 Saved {len(rows)} unlinked facts to database (all actions were NOOP)...")
                     
     def _upsert_mem(self, mem_id, content, c_at, u_at, status, relations, user_id):
-        self.client.upsert(self.mem_col, [{
+        self.client.upsert(self.semantic_col, [{
             "memory_id": mem_id,
             "embedding": get_embedding(content),
             "content": content,
@@ -1547,14 +1547,14 @@ class MemoryPipeline:
     def get_collections(self):
         """获取集合名称"""
         return {
-            "memories": self.mem_col,
+            "memories": self.semantic_col,
             "facts": self.fact_col,
             "chunks": self.chunk_col
         }
 
     def drop_collections(self):
         """删除所有集合"""
-        self.client.drop_collection(self.mem_col)
+        self.client.drop_collection(self.semantic_col)
         self.client.drop_collection(self.fact_col)
         self.client.drop_collection(self.chunk_col)
         print("All collections dropped.")
@@ -1611,7 +1611,7 @@ class MemoryPipeline:
             
             # 查询关联的记忆
             mem_res = self.client.query(
-                collection_name=self.mem_col,
+                collection_name=self.semantic_col,
                 filter=filter_expr,
                 output_fields=["memory_id", "content", "created_at", "updated_at", "relations"]
             )
@@ -1640,7 +1640,7 @@ class MemoryPipeline:
         
         # 搜索相关的memories
         mem_res = self.client.search(
-            self.mem_col, [query_vec], filter=f"status == 'active' and user_id == '{user_id}'", limit=top_k,
+            self.semantic_col, [query_vec], filter=f"status == 'active' and user_id == '{user_id}'", limit=top_k,
             output_fields=["content", "memory_id", "created_at"],
             similarity_threshold=threshold
         )

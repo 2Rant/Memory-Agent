@@ -246,7 +246,7 @@ class MemoryPipeline:
         dataset_suffix = f"_{dataset_name}" if dataset_name else ""
         full_suffix = f"{base_suffix}{dataset_suffix}"
         
-        self.mem_col = f"memories{full_suffix}_v1"
+        self.semantic_col = f"memories{full_suffix}_v1"
         self.fact_col = f"facts{full_suffix}_v1"
         self.chunk_col = f"chunks{full_suffix}_v1"
         
@@ -262,7 +262,7 @@ class MemoryPipeline:
         if clear_db:
             print("正在清空数据库...")
             # 直接删除集合，不检查存在性
-            self.client.drop_collection(self.mem_col)
+            self.client.drop_collection(self.semantic_col)
             self.client.drop_collection(self.fact_col)
             self.client.drop_collection(self.chunk_col)
             print("数据库清空完成.")
@@ -273,7 +273,7 @@ class MemoryPipeline:
         if hasattr(self.client, 'DataType'):
             # 这是 Milvus 客户端
             # 检查集合是否存在
-            if not self.client.has_collection(self.mem_col):
+            if not self.client.has_collection(self.semantic_col):
                 # 创建完整的schema
                 s = self.client.create_schema(auto_id=False, enable_dynamic_field=True)
                 s.add_field("memory_id", self.client.DataType.VARCHAR, max_length=64, is_primary=True)
@@ -286,25 +286,25 @@ class MemoryPipeline:
                 s.add_field("relations", self.client.DataType.JSON) 
                 
                 # 创建集合
-                self.client.create_collection(self.mem_col, schema=s)
-                print(f"Collection '{self.mem_col}' created.")
+                self.client.create_collection(self.semantic_col, schema=s)
+                print(f"Collection '{self.semantic_col}' created.")
                 
                 # 直接创建索引，不检查索引是否存在
                 # Milvus的create_index方法会在索引已存在时自动跳过或返回成功
                 try:
-                    print(f"为集合 '{self.mem_col}' 创建索引...")
+                    print(f"为集合 '{self.semantic_col}' 创建索引...")
                     idx_params = self.client.prepare_index_params()
                     idx_params.add_index(field_name="embedding", index_type="IVF_FLAT", metric_type="COSINE", params={"nlist": 128})
-                    self.client.create_index(self.mem_col, index_params=idx_params)
-                    print(f"集合 '{self.mem_col}' 的索引创建成功或已存在")
+                    self.client.create_index(self.semantic_col, index_params=idx_params)
+                    print(f"集合 '{self.semantic_col}' 的索引创建成功或已存在")
                 except Exception as e:
                     print(f"创建索引失败: {e}")
             else:
-                print(f"Collection '{self.mem_col}' already exists, skipping creation.")
+                print(f"Collection '{self.semantic_col}' already exists, skipping creation.")
         else:
             # 非Milvus客户端，直接创建集合
-            self.client.create_collection(self.mem_col)
-            print(f"Collection '{self.mem_col}' created or exists.")
+            self.client.create_collection(self.semantic_col)
+            print(f"Collection '{self.semantic_col}' created or exists.")
         
         # 处理 facts 集合
         if hasattr(self.client, 'DataType'):
@@ -380,8 +380,8 @@ class MemoryPipeline:
         # 加载集合（Qdrant 不需要显式加载）
         if hasattr(self.client, 'load_collection'):
             # 为每个集合创建索引后直接加载
-            print(f"加载集合 '{self.mem_col}'...")
-            self.client.load_collection(self.mem_col)
+            print(f"加载集合 '{self.semantic_col}'...")
+            self.client.load_collection(self.semantic_col)
             
             print(f"加载集合 '{self.fact_col}'...")
             self.client.load_collection(self.fact_col)
@@ -429,33 +429,43 @@ class MemoryPipeline:
                         # 确保每轮都有完整的user-assistant对话
                         turn_text = turn.strip()
                         if turn_text:
-                            # 对单轮对话提取事实
-                            turn_facts = self._extract_single_turn(turn_text)
+                            # 对单轮对话提取事实，传递timestamp参数
+                            turn_facts = self._extract_single_turn(turn_text, timestamp)
                             all_facts.extend(turn_facts)
                     
                     return {"chunk_id": str(uuid.uuid4()), "chunk_text": chunk_text, "new_facts": all_facts, "timestamp": timestamp}
             except Exception as e:
                 print(f"解析对话轮次失败，回退到whole模式: {e}")
         
-        # 默认模式：对整个chunk进行提取
-        facts = self._extract_single_turn(chunk_text)
+        # 默认模式：对整个chunk进行提取，传递timestamp参数
+        facts = self._extract_single_turn(chunk_text, timestamp)
         return {"chunk_id": str(uuid.uuid4()), "chunk_text": chunk_text, "new_facts": facts, "timestamp": timestamp}
     
-    def _extract_single_turn(self, text: str) -> List[Dict]:
+    def _extract_single_turn(self, text: str, timestamp: int = None) -> List[Dict]:
         """
         对单个文本片段提取事实
         
         Args:
             text: 要提取事实的文本
+            timestamp: 时间戳，可选，默认使用当前时间
             
         Returns:
             提取到的事实列表
         """
         try:
+            # 将timestamp转换为YYYY-MM-DD格式的日期字符串
+            if timestamp is None:
+                today_date = datetime.now().strftime("%Y-%m-%d")
+            else:
+                today_date = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d")
+            
+            # 替换prompt中的today_date占位符
+            formatted_prompt = MEMREADER_PROMPT.format(today_date=today_date)
+            
             response = llm_client.chat.completions.create(
                 model="gpt-4.1",
                 messages=[
-                        {"role": "system", "content": MEMREADER_PROMPT}, 
+                        {"role": "system", "content": formatted_prompt}, 
                         {"role": "user", "content": text}],
                 response_format={"type": "json_object"}, temperature=0
             )
@@ -466,11 +476,12 @@ class MemoryPipeline:
                 if fact_obj.get("fact"):
                     facts.append({
                         "text": fact_obj.get("fact", ""),
-                        "details": fact_obj.get("details", [])
+                        "details": fact_obj.get("details", []),
+                        "timestamp": timestamp  # 添加时间戳
                     })
         except Exception as e: 
             print(f"Extraction failed: {e}")
-            facts = [{"text": text, "details": []}]
+            facts = [{"text": text, "details": [], "timestamp": timestamp}]  # 添加时间戳
         return facts
 
     # --- Step 2: Retrieve ---    
@@ -485,7 +496,7 @@ class MemoryPipeline:
             query_vec = get_embedding(fact['text'])
             # 添加user_id过滤，确保只检索当前用户的记忆
             res = self.client.search(
-                self.mem_col, [query_vec], filter=f"status == 'active' and user_id == '{user_id}'", limit=limit,
+                self.semantic_col, [query_vec], filter=f"status == 'active' and user_id == '{user_id}'", limit=limit,
                 output_fields=["content", "memory_id", "created_at"],
                 similarity_threshold=similarity_threshold
             )
@@ -858,7 +869,7 @@ class MemoryPipeline:
                 
                 # 查询旧的memory内容
                 old_memories = self.client.query(
-                    collection_name=self.mem_col,
+                    collection_name=self.semantic_col,
                     filter=f"memory_id == '{target_mem_id}'",
                     output_fields=["content", "created_at"]
                 )
@@ -893,7 +904,7 @@ class MemoryPipeline:
                     mem_filter = f"status == 'active' and memory_id in [{','.join(quoted_source_ids)}]"
                     try:
                         source_mems = self.client.query(
-                            collection_name=self.mem_col,
+                            collection_name=self.semantic_col,
                             filter=mem_filter,
                             output_fields=["content", "memory_id", "created_at", "user_id"]
                         )
@@ -1087,7 +1098,7 @@ class MemoryPipeline:
                     print(f"   💾 Saved {len(rows)} unlinked facts to database (all actions were NOOP)...")
                     
     def _upsert_mem(self, mem_id, content, c_at, u_at, status, relations, user_id):
-        self.client.upsert(self.mem_col, [{
+        self.client.upsert(self.semantic_col, [{
             "memory_id": mem_id,
             "embedding": get_embedding(content),
             "content": content,
@@ -1292,7 +1303,7 @@ class MemoryPipeline:
         # 1. 搜索记忆集合，获取memoryA
         # ===========================
         mem_res = self.client.search(
-            self.mem_col, [query_vec], filter=filter_expr, limit=top_k,  # 搜索更多记忆，避免遗漏
+            self.semantic_col, [query_vec], filter=filter_expr, limit=top_k,  # 搜索更多记忆，避免遗漏
             output_fields=["content", "memory_id", "created_at", "user_id"],  # 包含user_id字段用于调试
             similarity_threshold=similarity_threshold
         )
@@ -1414,7 +1425,7 @@ class MemoryPipeline:
                 mem_id_filter = f"status == 'active' and user_id == '{user_id}' and memory_id in [{','.join(quoted_memory_ids)}]"
                 try:
                     memory_b_res = self.client.query(
-                        collection_name=self.mem_col,
+                        collection_name=self.semantic_col,
                         filter=mem_id_filter,
                         output_fields=["content", "memory_id", "created_at", "user_id"]
                     )
@@ -1470,7 +1481,7 @@ class MemoryPipeline:
                     quoted_additional_ids = [f'"{mid}"' for mid in additional_memory_ids]
                     additional_mem_filter = f"status == 'active' and user_id == '{user_id}' and memory_id in [{','.join(quoted_additional_ids)}]"
                     additional_mem_res = self.client.query(
-                        collection_name=self.mem_col,
+                        collection_name=self.semantic_col,
                         filter=additional_mem_filter,
                         output_fields=["content", "memory_id", "created_at", "user_id"]
                     )

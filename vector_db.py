@@ -51,6 +51,11 @@ class VectorDBInterface(ABC):
         pass
     
     @abstractmethod
+    def search_bm25(self, collection_name: str, query_text: str, filter: str = "", limit: int = 5, output_fields: List[str] = None):
+        """BM25 关键词搜索"""
+        pass
+
+    @abstractmethod
     def query(self, collection_name: str, filter: str, output_fields: List[str], limit: int = 100):
         """查询数据"""
         pass
@@ -137,6 +142,19 @@ class MilvusDB(VectorDBInterface):
         
         return results
     
+    def search_bm25(self, collection_name: str, query_text: str, filter: str = "", limit: int = 5, output_fields: List[str] = None):
+        """Milvus BM25 搜索实现 (需要 Milvus 2.4+ 支持全文检索)"""
+        # 注意：这里假设已经创建了支持全文检索的 Function 字段和 Index
+        # 由于 Milvus Python SDK 的 search 方法直接支持 bm25 function call，这里需要根据具体 SDK 版本适配
+        # 简单实现：使用 search 方法，传入 bm25 参数
+        # 实际情况可能需要 Function 对象，这里暂时模拟抛出未实现，因为 Milvus 的 BM25 设置比较复杂且版本依赖强
+        # 如果需要实现，通常需要先在 schema 定义时启用 enable_dynamic_field 和创建 function
+        
+        # 这里的实现是一个占位符，因为当前环境可能不支持 Milvus 2.4 的高级特性
+        # 实际项目中建议使用单独的 ES 或 Tantivy 来做 BM25，或者确认 Milvus 版本
+        print("⚠️ MilvusDB.search_bm25 尚未完整实现，返回空结果")
+        return [[]]
+
     def query(self, collection_name: str, filter: str, output_fields: List[str], limit: int = 100):
         return self.client.query(
             collection_name=collection_name,
@@ -277,6 +295,57 @@ class QdrantDB(VectorDBInterface):
         
         return [formatted_results]
     
+    def search_bm25(self, collection_name: str, query_text: str, filter: str = "", limit: int = 5, output_fields: List[str] = None):
+        """Qdrant BM25 搜索实现 (基于 Qdrant 的全文检索支持)"""
+        # Qdrant 支持 payload 的全文索引 (full-text index)
+        # 这里使用 scroll API 配合 filter 来模拟关键词搜索
+        from qdrant_client.models import Filter, MatchValue, FieldCondition, MatchText
+        
+        qdrant_filter = None
+        # 解析基础 filter (如 user_id)
+        must_conditions = []
+        if filter:
+             try:
+                if "==" in filter:
+                    key, value = filter.split("==")
+                    key = key.strip()
+                    value = value.strip().strip("'\"\n")
+                    must_conditions.append(FieldCondition(key=key, match=MatchValue(value=value)))
+             except:
+                 pass
+        
+        # 添加文本搜索条件
+        # 假设我们搜索 'content' 字段 (对于记忆) 或 'text' 字段 (对于事实)
+        # 这里需要知道搜索哪个字段，通常 output_fields 包含该字段，或者默认搜索 text/content
+        search_field = "content" 
+        # 简单的启发式：如果 collection 名字包含 fact，搜索 text
+        if "fact" in collection_name:
+            search_field = "text"
+            
+        must_conditions.append(FieldCondition(key=search_field, match=MatchText(text=query_text)))
+        
+        qdrant_filter = Filter(must=must_conditions)
+        
+        # 使用 scroll 接口获取匹配项
+        # 注意：Qdrant 的 scroll 不会按 BM25 分数排序，它主要用于过滤
+        # 要实现真正的 BM25 排序，Qdrant 需要使用专门的发现/推荐 API 或者客户端重排
+        # 这里作为一个简化的关键词匹配实现
+        results, _ = self.client.scroll(
+            collection_name=collection_name,
+            scroll_filter=qdrant_filter,
+            limit=limit,
+            with_payload=True
+        )
+        
+        formatted_results = []
+        for point in results:
+            entity = point.payload
+            # BM25 分数这里无法直接获取，暂时给一个默认高分或者基于匹配程度的伪分数
+            # 这是一个简化的实现
+            formatted_results.append({"entity": entity, "distance": 1.0}) # 1.0 表示关键词匹配命中
+            
+        return [formatted_results]
+
     def query(self, collection_name: str, filter: str, output_fields: List[str] = None, limit: int = 100):
         # Qdrant 的 query_points 方法不支持复杂的过滤表达式
         # 这里使用 search 方法模拟 query 功能
