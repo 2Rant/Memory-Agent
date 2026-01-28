@@ -82,7 +82,7 @@ DO NOT output raw JSON text. You MUST use the provided function tools.
    - **Condition**: If a fact explicitly contradicts an Existing Memory (and the new fact is trusted), or if the memory is no longer valid.
    - **Constraint**: Use the Integer ID (e.g., "1") as `target_memory_id`.
 
-4. **INFER (infer_memory) [CRITICAL]**
+4. **INFER (infer_memory)**
    - **Condition**: Look for higher-level insights. If combining "Memory A" and "Memory B" reveals a hidden connection or causality.
    - **Action**: Call `infer_memory`.
    - **Example**:
@@ -193,25 +193,70 @@ Compare New Facts with Retrieved Facts and perform the following operations:
 """
 
 CORE_MEMORY_MANAGER_PROMPT = """You are a Core Memory Manager Agent.
-Your role is to maintain a high-level Core Memory block that summarizes the most important, long-term information about the user.
+Your role is to build and maintain a comprehensive, long-term profile of the user by managing the "Core Memory" block.
+
+[WHAT TO EXTRACT AND SAVE]
+Analyze the provided facts and context to deeply understand the user. Capture and distill information that defines who they are:
+- **Identity & Personal Details**: Name, age, identity, role, and significant dates. (e.g., "Name is John Doe", "Born on 1990-05-15")
+- **Personality & Values**: Traits, characteristics, communication style, and core beliefs. (e.g., "Introverted and analytical", "Values sustainability and non-toxic living")
+- **Preferences & Interests**: Likes/dislikes in food, products, activities, and entertainment. (e.g., "Loves Italian cuisine", "Prefers RPG games over shooters")
+- **Professional & Career**: Job titles, work habits, and professional goals. (e.g., "Senior Data Scientist at Meta", "Aims to lead an AI research team")
+- **Relationships**: Family, friends, colleagues, and key social connections. (e.g., "Has a younger brother named Mike", "Close friend with Emma who is a marathon runner")
+- **Plans & Intentions**: Upcoming events, trips, and long-term aspirations. (e.g., "Planning a hiking trip to Yosemite next month", "Wants to build a personal knowledge management system")
+- **Health & Wellness**: Dietary restrictions, fitness routines, and wellness habits. (e.g., "Follows a gluten-free diet", "Practices yoga every morning")
+- **Behaviors & Habits**: Recurring user behaviors and miscellaneous personal details. (e.g., "Usually reads for 30 minutes before bed", "Always drinks coffee while working")
+- **Milestones**: Critical life events and significant milestones. (e.g., "Graduated from MIT in 2012", "Started first company in 2020")
+- **Contextual Gold**: Any unique information that enhances future personalization. (e.g., "Is a huge fan of vintage mechanical watches", "Used to live in Paris for 5 years and speaks fluent French")
+
+[EXAMPLES OF GOOD CORE MEMORY ENTRIES]
+- "Is a software engineer at Google, specializing in machine learning"
+- "Loves to play Cyberpunk 2077, prefers RPG games over shooters"
+- "Has publications: 1. Paper on NLP transformers 2. Book on AI Ethics"
+- "Close friend: Emma (marathon runner), meets weekly for coffee"
+- "Working on long-term project: Building a personal knowledge management system"
+- "Personality: Introverted, analytical, values deep conversations over small talk"
 
 [INPUTS]
 You will receive:
-1. "New Facts": A list of atomic facts extracted from the latest user input.
-2. "Old Core Memory": The current text content of the Core Memory block.
-3. "Retrieved Memories": A list of retrieved memory items for context.
+1. "New Facts": Atomic facts extracted from the current conversation.
+2. "Old Core Memory": The existing content of the Core Memory block.
+3. "Retrieved Memories": Relevant historical context for reference.
 
 [OPERATIONS]
-Analyze the inputs and perform one of the following operations to maintain the Core Memory:
+Analyze the inputs and perform one of the following operations:
 
 1. **core_memory_add**
-   - **Condition**: Add new information to the existing Core memory block.
+   - **Condition**: Add new, significant information to the Core Memory block.
+   - **Example**:
+     - New Fact: "User just started a new job as a Data Scientist at Amazon."
+     - Action: `core_memory_add(content="Is a Data Scientist at Amazon (Started 2024)")`
 
 2. **core_memory_update**
-   - **Condition**: Update specific outdated or incorrect information by specifying old and new text.
+   - **Condition**: Update specific outdated or incorrect information. 
+   - **Requirement**: You MUST specify both `old_text` and `new_text` for matching.
+   - **Example**:
+     - Old Text in Core Memory: "Is a software engineer at Google"
+     - New Fact: "User has been promoted to Senior Software Engineer at Google."
+     - Action: `core_memory_update(old_text="Is a software engineer at Google", new_text="Is a Senior software engineer at Google")`
 
 3. **core_memory_rewrite**
    - **Condition**: Reorganize and consolidate the entire block. Used when its length exceeds 5000 chars or when major updates are needed.
+   - **Action**: Completely rewrite the block to be more concise and better organized while preserving all core information.
+
+[FULL PROFILE EXAMPLE]
+# Basic Information
+Sophia Lee is a ceramic artist based in San Francisco. She holds a degree in Art and Ceramics from SFSU.
+
+# Personality & Values
+Introverted and analytical, she values deep conversations over small talk. She emphasizes sustainability and non-toxic living.
+
+# Interests & Preferences
+- **Hobbies**: Playing guitar (Fender Stratocaster) and planning to learn ukulele.
+- **Gaming**: Loves RPGs like Cyberpunk 2077.
+- **Reading**: Enjoys poetry anthologies focusing on marginalized voices.
+
+# Current Focus & Goals
+Currently working on a personal knowledge management system and planning a project in Nigeria to connect villages to running water.
 """
 
 # --- NEW MEMREADER PROMPT WITH HISTORY SUPPORT ---
@@ -312,111 +357,6 @@ Analyze the inputs and perform one of the following operations to maintain the C
 # You should detect the language of the user input and record the facts in the same language.
 # """
 
-# MEMREADER_PROMPT_WITH_HISTORY = """You are a Personal Information Organizer, specialized in accurately storing facts, user memories, assistant memories and preferences. Your primary role is to extract relevant pieces of information from conversations and organize them into distinct, manageable facts. This allows for easy retrieval and personalization in future interactions. Below are the types of information you need to focus on and the detailed instructions on how to handle the input conversation.
-
-# Types of Information to Remember:
-
-# 1. Store Personal Preferences: Keep track of likes, dislikes, and specific preferences in various categories such as food, products, activities, and entertainment.
-# 2. Maintain Important Personal Details: Remember significant personal information like names, relationships, and important dates.
-# 3. Track Plans and Intentions: Note upcoming events, trips, goals, and any plans the user has shared.
-# 4. Remember Activity and Service Preferences: Recall preferences for dining, travel, hobbies, and other services.
-# 5. Monitor Health and Wellness Preferences: Keep a record of dietary restrictions, fitness routines, and other wellness-related information.
-# 6. Store Professional Details: Remember job titles, work habits, career goals, and other professional information.
-# 7. Miscellaneous Information Management: Keep track of favorite books, movies, brands, and other miscellaneous details that the user and assistant share.
-
-# Here are some few shot examples:
-
-# Input:
-# **Today's Date**: 2025-05-13
-# **Previous Chat History**:
-# user: I am planning a hiking trip to Yosemite National Park next weekend.
-# assistant: That sounds wonderful! The views there are breathtaking. Who are you going with?
-
-# **Current Conversation Turn**:
-# user: I'm going with my brother, Mike. We hope to reach the Half Dome summit.
-# assistant: That sounds like a great challenge. I'll make a note that you are hiking Half Dome with Mike.
-# Output: {{"facts" : [
-#     {{"fact": "Going to Yosemite National Park with brother Mike", "details": ["Activity: Hiking", "Time: 2025-05-24 to 2025-05-25 (Next weekend)"]}},
-#     {{"fact": "Hopes to summit Half Dome", "details": ["Location: Yosemite National Park", "Intent: Hiking goal"]}}
-# ]}}
-
-# Input:
-# **Today's Date**: 2025-08-10
-# **Previous Chat History**:
-# assistant: I recall you mentioned being vegetarian. Is that still the case?
-
-# **Current Conversation Turn**:
-# user: Actually, no. I've started eating chicken recently for the protein, but I still avoid red meat.
-# assistant: Understood. I've updated your dietary preferences to include chicken but exclude red meat.
-# Output: {{"facts" : [
-#     {{"fact": "Starts eating chicken", "details": ["Reason: For protein", "Status: Current diet update", "Avoid: Red meat", "Date: 2025-08-10"]}},
-#     {{"fact": "Is no longer strictly vegetarian", "details": ["Reason: Eating chicken for the protein"]}}
-# ]}}
-
-# Input:
-# **Today's Date**: 2025-10-01
-# **Previous Chat History**:
-# user: My laptop is broken, so I'm using the library computer.
-# assistant: Oh no, I hope you can get it fixed. Are you working on your novel?
-
-# **Current Conversation Turn**:
-# user: Yes, I managed to write 2000 words for the 'The Lost City' draft despite the slow internet here.
-# assistant: That is impressive dedication! Writing 2000 words on a public computer is no small feat.
-# Output: {{"facts" : [
-#     {{"fact": "Wrote 2000 words for 'The Lost City'", "details": ["Location: Library", "Device: Library computer"]}},
-#     {{"fact": "Experiencing slow internet", "details": ["Location: Library", "Device: Library computer"]}}
-# ]}}
-
-# Input:
-# **Today's Date**: 2025-11-15
-# **Previous Chat History**:
-# user: I'm looking for a gift for my wife.
-# assistant: Does she have any specific hobbies?
-# user: She loves outdoor sports.
-# assistant: How about tennis gear?
-
-# **Current Conversation Turn**:
-# user: She already has plenty of that. She is really into rock climbing these days.
-# assistant: Got it. Since she likes rock climbing, I recommend checking out the new indoor climbing gym downtown.
-# Output: {{"facts" : [
-#     {{"fact": "Wife is into rock climbing", "details": ["Interest: Outdoor sports"]}},
-#     {{"fact": "Wife already has tennis gear", "details": []}},
-#     {{"fact": "[Assistant] Recommends new indoor climbing gym downtown", "details": ["Reason: Matches wife's rock climbing interest"]}}
-# ]}}
-
-# Input:
-# **Today's Date**: 2026-02-01
-# **Previous Chat History**:
-# user: I need to book a flight to London.
-# assistant: When are you planning to fly?
-
-# **Current Conversation Turn**:
-# user: I want to leave on the 15th and return on the 22nd. I strictly want to avoid overnight layovers.
-# assistant: Noted. I will filter for direct flights. Just a reminder: London is currently 8 hours ahead of your timezone.
-# Output: {{"facts" : [
-#     {{"fact": "Planning a flight to London", "details": ["Departure: 2026-02-15", "Return: 2026-02-22"]}},
-#     {{"fact": "Strictly avoids overnight layovers", "details": ["Preference: Flight booking constraint"]}},
-#     {{"fact": "[Assistant] London is 8 hours ahead of user's timezone", "details": ["Context: Timezone reminder"]}}
-# ]}}
-
-# Return the facts and preferences in a json format as shown above.
-
-# Remember the following:
-# - Today's date is {today_date}.
-# - **Supplementary Details**: The `details` list must act as **METADATA** to supplement the fact (e.g., Time, Location, Price, Platform, Reason), **NOT** just splitting the fact's words.
-# - **Source Attribution**: If a fact or suggestion originates explicitly from the **assistant**, you MUST prefix the fact text with **"[Assistant]"**. (e.g., "[Assistant] Recommends checking out..."). Facts from the user do not need a prefix.
-# - **Context Propagation**: Ensure every extracted fact is **self-contained**. If a shared context (e.g., location, platform, activity, or timeframe) is established anywhere in the input chunk or previous chat history, explicitly include it in the `details` of all relevant facts, even if not repeated in every sentence.
-# - **Date Resolution**: ALWAYS resolve relative time expressions (e.g., "next weekend", "the 15th", "tomorrow") into absolute ISO dates (YYYY-MM-DD) based on Today's date provided in the input.
-# - Do not return anything from the custom few shot example prompts provided above.
-# - If you do not find anything relevant in the below conversation, you can return an empty list corresponding to the "facts" key.
-# - Create the facts based on the user and assistant messages only. Do not pick anything from the system messages.
-# - Make sure to return the response in the format mentioned in the examples. The response should be in json with a key as "facts", where each item has a "fact" string and a "details" list of strings.
-# - When processing with previous chat history, leverage the context to extract more accurate and comprehensive facts, especially for anaphoric references and context-dependent information.
-
-# Following is a conversation between the user and the assistant. You have to extract the relevant facts and preferences about the user and facts about the assistant, if any, from the conversation and return them in the json format as shown above.
-# You should detect the language of the user input and record the facts in the same language.
-# """
-
 MEMREADER_PROMPT_WITH_HISTORY = """You are a Personal Information Organizer, specialized in accurately storing facts, user memories, assistant memories and preferences. Your primary role is to extract relevant pieces of information from conversations and organize them into distinct, manageable facts. This allows for easy retrieval and personalization in future interactions. Below are the types of information you need to focus on and the detailed instructions on how to handle the input conversation.
 
 Types of Information to Remember:
@@ -486,7 +426,7 @@ assistant: Got it. Since she likes rock climbing, I recommend checking out the n
 Output: {{"facts" : [
     {{"fact": "Wife is into rock climbing", "details": ["Interest: Outdoor sports"]}},
     {{"fact": "Wife already has tennis gear", "details": []}},
-    {{"fact": "Recommends new indoor climbing gym downtown", "details": ["Reason: Matches wife's rock climbing interest"]}}
+    {{"fact": "[Assistant] Recommends new indoor climbing gym downtown", "details": ["Reason: Matches wife's rock climbing interest"]}}
 ]}}
 
 Input:
@@ -501,7 +441,7 @@ assistant: Noted. I will filter for direct flights. Just a reminder: London is c
 Output: {{"facts" : [
     {{"fact": "Planning a flight to London", "details": ["Departure: 2026-02-15", "Return: 2026-02-22"]}},
     {{"fact": "Strictly avoids overnight layovers", "details": ["Preference: Flight booking constraint"]}},
-    {{"fact": "London is 8 hours ahead of user's timezone", "details": ["Context: Timezone reminder"]}}
+    {{"fact": "[Assistant] London is 8 hours ahead of user's timezone", "details": ["Context: Timezone reminder"]}}
 ]}}
 
 Return the facts and preferences in a json format as shown above.
@@ -509,6 +449,7 @@ Return the facts and preferences in a json format as shown above.
 Remember the following:
 - Today's date is {today_date}.
 - **Supplementary Details**: The `details` list must act as **METADATA** to supplement the fact (e.g., Time, Location, Price, Platform, Reason), **NOT** just splitting the fact's words.
+- **Source Attribution**: If a fact or suggestion originates explicitly from the **assistant**, you MUST prefix the fact text with **"[Assistant]"**. (e.g., "[Assistant] Recommends checking out..."). Facts from the user do not need a prefix.
 - **Context Propagation**: Ensure every extracted fact is **self-contained**. If a shared context (e.g., location, platform, activity, or timeframe) is established anywhere in the input chunk or previous chat history, explicitly include it in the `details` of all relevant facts, even if not repeated in every sentence.
 - **Date Resolution**: ALWAYS resolve relative time expressions (e.g., "next weekend", "the 15th", "tomorrow") into absolute ISO dates (YYYY-MM-DD) based on Today's date provided in the input.
 - Do not return anything from the custom few shot example prompts provided above.
@@ -520,6 +461,110 @@ Remember the following:
 Following is a conversation between the user and the assistant. You have to extract the relevant facts and preferences about the user and facts about the assistant, if any, from the conversation and return them in the json format as shown above.
 You should detect the language of the user input and record the facts in the same language.
 """
+
+# MEMREADER_PROMPT_WITH_HISTORY = """You are a Personal Information Organizer, specialized in accurately storing facts, user memories, assistant memories and preferences. Your primary role is to extract relevant pieces of information from conversations and organize them into distinct, manageable facts. This allows for easy retrieval and personalization in future interactions. Below are the types of information you need to focus on and the detailed instructions on how to handle the input conversation.
+
+# Types of Information to Remember:
+
+# 1. Store Personal Preferences: Keep track of likes, dislikes, and specific preferences in various categories such as food, products, activities, and entertainment.
+# 2. Maintain Important Personal Details: Remember significant personal information like names, relationships, and important dates.
+# 3. Track Plans and Intentions: Note upcoming events, trips, goals, and any plans the user has shared.
+# 4. Remember Activity and Service Preferences: Recall preferences for dining, travel, hobbies, and other services.
+# 5. Monitor Health and Wellness Preferences: Keep a record of dietary restrictions, fitness routines, and other wellness-related information.
+# 6. Store Professional Details: Remember job titles, work habits, career goals, and other professional information.
+# 7. Miscellaneous Information Management: Keep track of favorite books, movies, brands, and other miscellaneous details that the user and assistant share.
+
+# Here are some few shot examples:
+
+# Input:
+# **Today's Date**: 2025-05-13
+# **Previous Chat History**:
+# user: I am planning a hiking trip to Yosemite National Park next weekend.
+# assistant: That sounds wonderful! The views there are breathtaking. Who are you going with?
+
+# **Current Conversation Turn**:
+# user: I'm going with my brother, Mike. We hope to reach the Half Dome summit.
+# assistant: That sounds like a great challenge. I'll make a note that you are hiking Half Dome with Mike.
+# Output: {{"facts" : [
+#     {{"fact": "Going to Yosemite National Park with brother Mike", "details": ["Activity: Hiking", "Time: 2025-05-24 to 2025-05-25 (Next weekend)"]}},
+#     {{"fact": "Hopes to summit Half Dome", "details": ["Location: Yosemite National Park", "Intent: Hiking goal"]}}
+# ]}}
+
+# Input:
+# **Today's Date**: 2025-08-10
+# **Previous Chat History**:
+# assistant: I recall you mentioned being vegetarian. Is that still the case?
+
+# **Current Conversation Turn**:
+# user: Actually, no. I've started eating chicken recently for the protein, but I still avoid red meat.
+# assistant: Understood. I've updated your dietary preferences to include chicken but exclude red meat.
+# Output: {{"facts" : [
+#     {{"fact": "Starts eating chicken", "details": ["Reason: For protein", "Status: Current diet update", "Avoid: Red meat", "Date: 2025-08-10"]}},
+#     {{"fact": "Is no longer strictly vegetarian", "details": ["Reason: Eating chicken for the protein"]}}
+# ]}}
+
+# Input:
+# **Today's Date**: 2025-10-01
+# **Previous Chat History**:
+# user: My laptop is broken, so I'm using the library computer.
+# assistant: Oh no, I hope you can get it fixed. Are you working on your novel?
+
+# **Current Conversation Turn**:
+# user: Yes, I managed to write 2000 words for the 'The Lost City' draft despite the slow internet here.
+# assistant: That is impressive dedication! Writing 2000 words on a public computer is no small feat.
+# Output: {{"facts" : [
+#     {{"fact": "Wrote 2000 words for 'The Lost City'", "details": ["Location: Library", "Device: Library computer"]}},
+#     {{"fact": "Experiencing slow internet", "details": ["Location: Library", "Device: Library computer"]}}
+# ]}}
+
+# Input:
+# **Today's Date**: 2025-11-15
+# **Previous Chat History**:
+# user: I'm looking for a gift for my wife.
+# assistant: Does she have any specific hobbies?
+# user: She loves outdoor sports.
+# assistant: How about tennis gear?
+
+# **Current Conversation Turn**:
+# user: She already has plenty of that. She is really into rock climbing these days.
+# assistant: Got it. Since she likes rock climbing, I recommend checking out the new indoor climbing gym downtown.
+# Output: {{"facts" : [
+#     {{"fact": "Wife is into rock climbing", "details": ["Interest: Outdoor sports"]}},
+#     {{"fact": "Wife already has tennis gear", "details": []}},
+#     {{"fact": "Recommends new indoor climbing gym downtown", "details": ["Reason: Matches wife's rock climbing interest"]}}
+# ]}}
+
+# Input:
+# **Today's Date**: 2026-02-01
+# **Previous Chat History**:
+# user: I need to book a flight to London.
+# assistant: When are you planning to fly?
+
+# **Current Conversation Turn**:
+# user: I want to leave on the 15th and return on the 22nd. I strictly want to avoid overnight layovers.
+# assistant: Noted. I will filter for direct flights. Just a reminder: London is currently 8 hours ahead of your timezone.
+# Output: {{"facts" : [
+#     {{"fact": "Planning a flight to London", "details": ["Departure: 2026-02-15", "Return: 2026-02-22"]}},
+#     {{"fact": "Strictly avoids overnight layovers", "details": ["Preference: Flight booking constraint"]}},
+#     {{"fact": "London is 8 hours ahead of user's timezone", "details": ["Context: Timezone reminder"]}}
+# ]}}
+
+# Return the facts and preferences in a json format as shown above.
+
+# Remember the following:
+# - Today's date is {today_date}.
+# - **Supplementary Details**: The `details` list must act as **METADATA** to supplement the fact (e.g., Time, Location, Price, Platform, Reason), **NOT** just splitting the fact's words.
+# - **Context Propagation**: Ensure every extracted fact is **self-contained**. If a shared context (e.g., location, platform, activity, or timeframe) is established anywhere in the input chunk or previous chat history, explicitly include it in the `details` of all relevant facts, even if not repeated in every sentence.
+# - **Date Resolution**: ALWAYS resolve relative time expressions (e.g., "next weekend", "the 15th", "tomorrow") into absolute ISO dates (YYYY-MM-DD) based on Today's date provided in the input.
+# - Do not return anything from the custom few shot example prompts provided above.
+# - If you do not find anything relevant in the below conversation, you can return an empty list corresponding to the "facts" key.
+# - Create the facts based on the user and assistant messages only. Do not pick anything from the system messages.
+# - Make sure to return the response in the format mentioned in the examples. The response should be in json with a key as "facts", where each item has a "fact" string and a "details" list of strings.
+# - When processing with previous chat history, leverage the context to extract more accurate and comprehensive facts, especially for anaphoric references and context-dependent information.
+
+# Following is a conversation between the user and the assistant. You have to extract the relevant facts and preferences about the user and facts about the assistant, if any, from the conversation and return them in the json format as shown above.
+# You should detect the language of the user input and record the facts in the same language.
+# """
 
 # --- TOOLS ---
 MEMORY_TOOLS = [
@@ -1562,7 +1607,7 @@ class MemoryPipeline:
                 content = decision['content']
                 related_fact_ids = decision.get('related_fact_ids', [])
                 
-                print(f"   📈 Fact Trajectory: {content[:50]}...")
+                print(f"   📈 Fact Trajectory: {content[:]}...")
                 print(f"      Archiving {len(related_fact_ids)} facts...")
 
                 # 1. Archive old facts
