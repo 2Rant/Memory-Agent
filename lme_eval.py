@@ -7,7 +7,7 @@ class LLMGrade(BaseModel):
     llm_reasoning: str = Field(description="Explain why the answer is correct or incorrect.")
 
 
-def lme_grader(llm_client, question, golden_answer, response):
+def lme_grader(llm_client, question, golden_answer, response, model="gpt-4o-mini"):
     system_prompt = """You are an expert grader that determines if answers to questions match a gold standard answer"""
     judge_prompt = LME_JUDGE_MODEL_TEMPLATE.format(
         question=question, golden_answer=golden_answer, response=response
@@ -15,7 +15,7 @@ def lme_grader(llm_client, question, golden_answer, response):
 
     try:
         response = llm_client.chat.completions.create(
-            model="gpt-4.1-mini",
+            model=model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": judge_prompt},
