@@ -15,7 +15,7 @@ def lme_grader(llm_client, question, golden_answer, response):
 
     try:
         response = llm_client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-4.1-mini",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": judge_prompt},

@@ -1950,15 +1950,7 @@ class MemoryPipeline:
             for hit in mem_res[0]:
                 memory = hit['entity']
                 memory_id = memory['memory_id']
-                # 根据不同的数据库类型处理相似度分数
-                # Milvus返回的是distance（L2距离或余弦距离），通常需要转换
-                # Qdrant返回的是distance（即score），已经是余弦相似度
-                if isinstance(self.client, QdrantDB):
-                    similarity_score = hit['distance']
-                else:
-                    # Milvus: distance表示1 - 相似度（如果使用的是cosine metric）
-                    # 转换为相似度得分，范围[0, 1]，值越大表示越相似
-                    similarity_score = max(0, 1 - hit['distance'])
+                similarity_score = hit['distance']
                 # 保存相似度得分
                 memory["original_score"] = similarity_score
                 memory_dict[memory_id] = memory

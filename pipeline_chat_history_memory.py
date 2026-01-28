@@ -2178,7 +2178,7 @@ class MemoryPipeline:
         )
         response = llm_client.chat.completions.create(
                     # model="gemini-3-pro-preview",
-                    model="gpt-4.1",
+                    model="gpt-4o-mini",
                     messages=[{"role": "system", "content": prompt}],
                     temperature=0,
                 )
