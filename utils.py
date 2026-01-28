@@ -31,7 +31,8 @@ import time
 def get_embedding(
     text_input: Union[str, List[str]], # 支持传单个字符串或列表
     model: str = "text-embedding-3-small", 
-    dimension: int = 1536 # ✅ 建议改回默认值，或者至少 512
+    dimension: int = 1536, # ✅ 建议改回默认值，或者至少 512
+    client = None # 可选：传入自定义 client
 ) -> Union[List[float], List[List[float]]]:
     """
     生成嵌入向量，支持批处理和重试。
@@ -44,23 +45,38 @@ def get_embedding(
         text_input = [t.replace("\n", " ") for t in text_input]
         is_batch = True
 
+    # 确定使用的 API 调用方式
+    use_legacy = client is None
+    
     max_retries = 3
     for attempt in range(max_retries):
         try:
             # 2. 调用 API
-            response = openai.Embedding.create(
-                input=text_input,
-                model=model,
-                dimensions=dimension
-            )
-            
-            # 3. 提取结果
-            if is_batch:
-                # 返回 List[List[float]]
-                return [data["embedding"] for data in response["data"]]
+            if use_legacy:
+                response = openai.Embedding.create(
+                    input=text_input,
+                    model=model,
+                    dimensions=dimension
+                )
+                
+                # 3. 提取结果 (旧版 SDK)
+                if is_batch:
+                    return [data["embedding"] for data in response["data"]]
+                else:
+                    return response["data"][0]["embedding"]
             else:
-                # 返回 List[float]
-                return response["data"][0]["embedding"]
+                # 使用传入的 client (新版 SDK 风格)
+                response = client.embeddings.create(
+                    input=text_input,
+                    model=model,
+                    dimensions=dimension
+                )
+                
+                # 3. 提取结果 (新版 SDK)
+                if is_batch:
+                    return [data.embedding for data in response.data]
+                else:
+                    return response.data[0].embedding
                 
         except Exception as e:
             print(f"Embedding API Error (Attempt {attempt+1}/{max_retries}): {e}")

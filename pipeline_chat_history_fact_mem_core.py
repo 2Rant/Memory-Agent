@@ -27,10 +27,27 @@ load_dotenv()
 # Select provider: "openai" or "gemini"
 # LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")
 
-# Initialize client with shared configuration
-llm_client = OpenAI(
-    api_key=os.getenv("OPENAI_API_KEY"), 
-    base_url=os.getenv("OPENAI_BASE_URL")
+# Select LLM mode: "local" or "online"
+LLM_MODE = os.getenv("LLM_MODE", "online")
+
+if LLM_MODE == "local":
+    # Initialize client for Local LLM
+    llm_client = OpenAI(
+        api_key=os.getenv("LOCAL_LLM_API_KEY", ""), 
+        base_url=os.getenv("LOCAL_LLM_BASE_URL")
+    )
+    print(f"🚀 Using Local LLM for generation: {os.getenv('LOCAL_LLM_BASE_URL')}")
+else:
+    # Initialize client for OpenAI (Online)
+    llm_client = OpenAI(
+        api_key=os.getenv("OPENAI_API_KEY"), 
+        base_url=os.getenv("OPENAI_BASE_URL")
+    )
+    print("🌐 Using OpenAI for generation.")
+
+# Initialize a separate client for embeddings (always OpenAI)
+embedding_client = OpenAI(
+    api_key=os.getenv("OPENAI_API_KEY")
 )
 
 # Always use text-embedding-3-small as requested
@@ -196,10 +213,11 @@ CORE_MEMORY_MANAGER_PROMPT = """You are a Core Memory Manager Agent.
 Your role is to build and maintain a comprehensive, long-term profile of the user by managing the "Core Memory" block.
 
 [WHAT TO EXTRACT AND SAVE]
-Analyze the provided facts and context to deeply understand the user. Capture and distill information that defines who they are:
+Analyze the provided facts and context to deeply understand the user. Capture and distill information that defines who they are and how to interact with them:
 - **Identity & Personal Details**: Name, age, identity, role, and significant dates. (e.g., "Name is John Doe", "Born on 1990-05-15")
 - **Personality & Values**: Traits, characteristics, communication style, and core beliefs. (e.g., "Introverted and analytical", "Values sustainability and non-toxic living")
-- **Preferences & Interests**: Likes/dislikes in food, products, activities, and entertainment. (e.g., "Loves Italian cuisine", "Prefers RPG games over shooters")
+- **Personal Preferences**: Specific likes/dislikes in food, products, brands, and entertainment. (e.g., "Loves Italian cuisine", "Prefers RPG games over shooters", "Favorite brand is Apple")
+- **Activity & Service Preferences**: Preferences for dining, travel, hobbies, and other services. (e.g., "Prefers boutique hotels", "Enjoys morning runs", "Always books window seats")
 - **Professional & Career**: Job titles, work habits, and professional goals. (e.g., "Senior Data Scientist at Meta", "Aims to lead an AI research team")
 - **Relationships**: Family, friends, colleagues, and key social connections. (e.g., "Has a younger brother named Mike", "Close friend with Emma who is a marathon runner")
 - **Plans & Intentions**: Upcoming events, trips, and long-term aspirations. (e.g., "Planning a hiking trip to Yosemite next month", "Wants to build a personal knowledge management system")
@@ -734,7 +752,8 @@ CORE_MEMORY_TOOLS = [
 # --- UTILS ---
 def get_embedding(text: str) -> List[float]:
     text = text.replace("\n", " ")
-    return llm_client.embeddings.create(input=[text], model=EMBEDDING_MODEL).data[0].embedding
+    # Use embedding_client (always OpenAI) instead of llm_client (which might be local)
+    return embedding_client.embeddings.create(input=[text], model=EMBEDDING_MODEL).data[0].embedding
 
 @dataclass
 class MilvusConfig:
@@ -1555,8 +1574,8 @@ class MemoryPipeline:
                 
                 self._upsert_mem(target_mem_id, decision['new_content'], decision['orig_created'], ts, "active", [], decision.get('user_id', 'default'))
                 print(f"   🔄 Updated Mem: {target_mem_id[:8]}...")
-                print(f"      Before: {old_content[:100]}...")
-                print(f"      After:  {decision['new_content'][:100]}...")
+                print(f"      Before: {old_content[:]}...")
+                print(f"      After:  {decision['new_content'][:]}...")
 
             elif action == "DELETE":
                 self.operation_counts["DELETE"] += 1
@@ -1592,9 +1611,9 @@ class MemoryPipeline:
                 if source_mems:
                     print(f"   │ 📋 Infer 前的 Memory ({len(source_mems)}个):")
                     for mem in source_mems:
-                        print(f"   │      📌 ID: {mem['memory_id'][:8]}... | 内容: {mem['content'][:100]}...")
+                        print(f"   │      📌 ID: {mem['memory_id'][:8]}... | 内容: {mem['content'][:]}...")
                 print(f"   │ 📝 Infer生成的 Memory:")
-                print(f"   │      📌 ID: {target_mem_id[:8]}... | 内容: {decision['summary'][:100]}...")
+                print(f"   │      📌 ID: {target_mem_id[:8]}... | 内容: {decision['summary'][:]}...")
                 print(f"   └─────────────────────────────────────────────────────────────────────────────────")
 
             # --- Fact Operations (Case 5-6) ---
@@ -1625,7 +1644,7 @@ class MemoryPipeline:
                                 if isinstance(details, list):
                                     if "Status: Archived" not in details:
                                         details.append("Status: Archived")
-                                        details.append(f"Archived Reason: Trajectorized into {content[:50]}...")
+                                        details.append(f"Archived Reason: Trajectorized into {content[:]}...")
                                 
                                 self.client.upsert(self.fact_col, [{
                                     "fact_id": fid,
