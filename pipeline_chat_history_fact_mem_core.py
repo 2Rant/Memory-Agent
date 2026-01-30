@@ -22,10 +22,6 @@ from vector_db import VectorDBConfig, VectorDBFactory, QdrantDB
 load_dotenv()
 
 # ⚠️ 请确保环境变量中有 OPENAI_API_KEY 和 MILVUS_URI
-# 如果是本地测试，确保 Docker 中 Milvus 已启动
-
-# Select provider: "openai" or "gemini"
-# LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")
 
 # Select LLM mode: "local" or "online"
 LLM_MODE = os.getenv("LLM_MODE", "online")
@@ -47,6 +43,7 @@ else:
 
 # Initialize a separate client for embeddings (always OpenAI)
 embedding_client = OpenAI(
+    base_url=os.getenv("OPENAI_BASE_URL"),
     api_key=os.getenv("OPENAI_API_KEY")
 )
 
@@ -61,25 +58,12 @@ Your role is to maintain the consistency and growth of a memory graph using the 
 You will receive:
 1. "New Facts": A list of atomic facts extracted from the latest user input.
 2. "Existing Memories": A list of retrieved memory items, each with a simplified Integer ID (e.g., "0", "1", "2").
-   - These memories include those directly related to the new facts, as well as other related facts connected with these memories.
-   - They form a connected graph of information relevant to the new facts.
-
-[MANDATORY OUTPUT FORMAT]
-For every new fact you process, you MUST:
-1. First generate a detailed thinking process
-2. Then call the appropriate tool
-
-[THINKING PROCESS REQUIREMENTS]
-Your thinking process MUST include:
-- The specific new fact you're analyzing
-- Which existing memories are relevant (with their IDs)
-- How memories are connected through related facts
-- Your comparison and reasoning
-- Which operation you've decided to perform and why
+   - These memories include those directly related to the new facts.
+   - They form a connected graph of information relevant to the new facts. 
 
 [OPERATIONS & GUIDELINES]
 Compare New Facts with Existing Memories and perform the following operations using the available tools. 
-DO NOT output raw JSON text. You MUST use the provided function tools.
+DO NOT output raw JSON text. You MUST use the provided function tools. Meanwhile, you will be queried only once, so make sure to call all the memory insertion functions in one turn.
 
 1. **ADD (create_memory)**
    - **Condition**: If a fact contains completely NEW information not present in Existing Memories.
@@ -214,17 +198,18 @@ Your role is to build and maintain a comprehensive, long-term profile of the use
 
 [WHAT TO EXTRACT AND SAVE]
 Analyze the provided facts and context to deeply understand the user. Capture and distill information that defines who they are and how to interact with them:
-- **Identity & Personal Details**: Name, age, identity, role, and significant dates. (e.g., "Name is John Doe", "Born on 1990-05-15")
-- **Personality & Values**: Traits, characteristics, communication style, and core beliefs. (e.g., "Introverted and analytical", "Values sustainability and non-toxic living")
-- **Personal Preferences**: Specific likes/dislikes in food, products, brands, and entertainment. (e.g., "Loves Italian cuisine", "Prefers RPG games over shooters", "Favorite brand is Apple")
-- **Activity & Service Preferences**: Preferences for dining, travel, hobbies, and other services. (e.g., "Prefers boutique hotels", "Enjoys morning runs", "Always books window seats")
-- **Professional & Career**: Job titles, work habits, and professional goals. (e.g., "Senior Data Scientist at Meta", "Aims to lead an AI research team")
-- **Relationships**: Family, friends, colleagues, and key social connections. (e.g., "Has a younger brother named Mike", "Close friend with Emma who is a marathon runner")
-- **Plans & Intentions**: Upcoming events, trips, and long-term aspirations. (e.g., "Planning a hiking trip to Yosemite next month", "Wants to build a personal knowledge management system")
-- **Health & Wellness**: Dietary restrictions, fitness routines, and wellness habits. (e.g., "Follows a gluten-free diet", "Practices yoga every morning")
-- **Behaviors & Habits**: Recurring user behaviors and miscellaneous personal details. (e.g., "Usually reads for 30 minutes before bed", "Always drinks coffee while working")
-- **Milestones**: Critical life events and significant milestones. (e.g., "Graduated from MIT in 2012", "Started first company in 2020")
-- **Contextual Gold**: Any unique information that enhances future personalization. (e.g., "Is a huge fan of vintage mechanical watches", "Used to live in Paris for 5 years and speaks fluent French")
+- **Identity & Personal Details**: Name, age, identity, role, and significant dates.
+- **Personality & Values**: Traits, characteristics, communication style, and core beliefs.
+- **Personal Preferences**: Specific likes/dislikes in food, products, brands, and entertainment.
+- **Activity & Service Preferences**: Preferences for dining, travel, hobbies, and other services.
+- **Professional & Career**: Job titles, work habits, and professional goals.
+- **Relationships**: Family, friends, colleagues, and key social connections.
+- **Plans & Intentions**: Upcoming events, trips, and long-term aspirations.
+- **Health & Wellness**: Dietary restrictions, fitness routines, and wellness habits.
+- **Behaviors & Habits**: Recurring user behaviors and miscellaneous personal details.
+- **Milestones**: Critical life events and significant milestones.
+- **Contextual Gold**: Any unique information that enhances future personalization.
+
 
 [EXAMPLES OF GOOD CORE MEMORY ENTRIES]
 - "Is a software engineer at Google, specializing in machine learning"
@@ -241,7 +226,7 @@ You will receive:
 3. "Retrieved Memories": Relevant historical context for reference.
 
 [OPERATIONS]
-Analyze the inputs and perform one of the following operations:
+Analyze the inputs and extract fundamental information about the user that will be beneficial in future conversations. Perform one of the following operations:
 
 1. **core_memory_add**
    - **Condition**: Add new, significant information to the Core Memory block.
@@ -261,21 +246,112 @@ Analyze the inputs and perform one of the following operations:
    - **Condition**: Reorganize and consolidate the entire block. Used when its length exceeds 5000 chars or when major updates are needed.
    - **Action**: Completely rewrite the block to be more concise and better organized while preserving all core information.
 
-[FULL PROFILE EXAMPLE]
-# Basic Information
-Sophia Lee is a ceramic artist based in San Francisco. She holds a degree in Art and Ceramics from SFSU.
-
-# Personality & Values
-Introverted and analytical, she values deep conversations over small talk. She emphasizes sustainability and non-toxic living.
-
-# Interests & Preferences
-- **Hobbies**: Playing guitar (Fender Stratocaster) and planning to learn ukulele.
-- **Gaming**: Loves RPGs like Cyberpunk 2077.
-- **Reading**: Enjoys poetry anthologies focusing on marginalized voices.
-
-# Current Focus & Goals
-Currently working on a personal knowledge management system and planning a project in Nigeria to connect villages to running water.
 """
+
+
+# CORE_MEMORY_MANAGER_PROMPT = """You are a Core Memory Manager Agent.
+# Your role is to build and maintain a comprehensive, long-term profile of the user by managing the "Core Memory" block.
+
+# [WHAT TO EXTRACT AND SAVE]
+# You need to analyze the input messages, understand what the user is communicating and going through, then save details about theuser, including: User's name, identity, role, occupation, location; Personality traits and characteristics; Preferences and values (what they like/dislike, care about);Personal profile facts and background; Key relationships (family, close friends, colleagues); Long-term projects, goals, and aspirations; User behaviors and habits; Critical life events and milestones; Any information that would help in future conversations.
+
+# [EXAMPLES OF GOOD CORE MEMORY ENTRIES]
+# - "Is a software engineer at Google, specializing in machine learning"
+# - "Loves to play Cyberpunk 2077, prefers RPG games over shooters"
+# - "Has publications: 1. Paper on NLP transformers 2. Book on AI Ethics"
+# - "Close friend: Emma (marathon runner), meets weekly for coffee"
+# - "Working on long-term project: Building a personal knowledge management system"
+# - "Personality: Introverted, analytical, values deep conversations over small talk"
+
+# [INPUTS]
+# You will receive:
+# 1. "New Facts": Atomic facts extracted from the current conversation.
+# 2. "Old Core Memory": The existing content of the Core Memory block.
+# 3. "Retrieved Memories": Relevant historical context for reference.
+
+# [Instructions]
+# 1. Examine all messages thoroughly to extract EVERY detail about the user's preferences, personal information, and vital facts
+# 2. Look deep into the messages to identify user behaviors, preferences, personal details
+# 3. Be proactive -extract more information than just what's explicitly stated
+# 4. The core memory can be as detailed as possible -capture context and nuance
+
+# [OPERATIONS]
+# Analyze the inputs and perform one of the following operations:
+
+# 1. **core_memory_add**
+#    - **Condition**: Add new, significant information to the Core Memory block.
+#    - **Example**:
+#      - New Fact: "User just started a new job as a Data Scientist at Amazon."
+#      - Action: `core_memory_add(content="Is a Data Scientist at Amazon (Started 2024)")`
+
+# 2. **core_memory_update**
+#    - **Condition**: Update specific outdated or incorrect information. 
+#    - **Requirement**: You MUST specify both `old_text` and `new_text` for matching.
+#    - **Example**:
+#      - Old Text in Core Memory: "Is a software engineer at Google"
+#      - New Fact: "User has been promoted to Senior Software Engineer at Google."
+#      - Action: `core_memory_update(old_text="Is a software engineer at Google", new_text="Is a Senior software engineer at Google")`
+
+# 3. **core_memory_rewrite**
+#    - **Condition**: Reorganize and consolidate the entire block. Used when its length exceeds 5000 chars or when major updates are needed.
+#    - **Action**: Completely rewrite the block to be more concise and better organized while preserving all core information.
+
+# """
+
+
+# CORE_MEMORY_MANAGER_PROMPT = """You are a Core Memory Manager Agent.
+# Your role is to build and maintain a structured, concise, and high-level profile of the user by managing the "Core Memory" block.
+
+# [GOAL]
+# Do NOT create a chronological log of events. Instead, maintain a structured "User Profile" document.
+# Your goal is to **distill** conversations into lasting traits, facts, and preferences.
+
+# [MEMORY STRUCTURE]
+# The Core Memory block MUST be organized into the following Markdown sections. Always enforce this structure:
+# 1. **# Identity & Basics**: Name, role, location, key equipment (e.g., Car model).
+# 2. **# Personality & Values**: Traits, communication style, core beliefs.
+# 3. **# Interests & Preferences**: Hobbies, likes/dislikes (e.g., Gaming, Food, Travel style).
+# 4. **# Relationships**: Key people and the nature of the bond.
+# 5. **# Long-term Context**: Ongoing projects, long-term goals, financial habits.
+
+# [CRITICAL INSTRUCTIONS - READ CAREFULLY]
+# 1. **Extract Traits, Not Events**: 
+#    - BAD: "User helped Emily move house on Tuesday." (This is a log)
+#    - GOOD: "Is helpful and loyal to friends (e.g., helped Emily move)."
+#    - BAD: "Paid insurance on the app today."
+#    - GOOD: "Tech-savvy; prefers managing finances via mobile apps."
+
+# 2. **Consolidate & Merge**:
+#    - Never repeat information. If the user mentions their car again, UPDATE the existing "Car" entry with new details instead of adding a new line.
+#    - Combine related facts. (e.g., Merge "Loves RPGs" and "Playing Cyberpunk" into one bullet point).
+
+# 3. **Conciseness**:
+#    - Use bullet points (-).
+#    - Keep entries brief and dense.
+
+# [OPERATIONS]
+# Analyze the inputs and perform one of the following operations:
+
+# 1. **core_memory_add**
+#    - **Condition**: Add new information that does NOT strictly fit into existing lines.
+#    - **Constraint**: You MUST determine which Section (# Header) the new fact belongs to.
+#    - **Example**: `core_memory_add(content="- New job: Data Scientist at Amazon", section="# Identity & Basics")`
+
+# 2. **core_memory_update**
+#    - **Condition**: The user provides new details about an EXISTING topic. Merge the new fact into the old one.
+#    - **Example**:
+#      - Old: "- Owns a Honda Civic."
+#      - New Fact: "The Civic is silver and has lane departure warning."
+#      - Action: `core_memory_update(old_text="- Owns a Honda Civic.", new_text="- Owns a silver Honda Civic with lane departure warning.")`
+
+# 3. **core_memory_rewrite**
+#    - **Condition**: The memory block is disorganized, contains duplicates, or looks like a chat log.
+#    - **Action**: Re-organize the ENTIRE block into the [MEMORY STRUCTURE] sections defined above. Remove chronological dates unless they are birthdays or anniversaries.
+
+# [ANTI-PATTERNS - AVOID THESE]
+# - Do not store duplicate facts (e.g., mentioning the car model twice).
+# - Do not store trivial logs (e.g., "Filled gas at Shell today"). Instead store the habit ("Loyal to Shell rewards program").
+# """
 
 # --- NEW MEMREADER PROMPT WITH HISTORY SUPPORT ---
 # MEMREADER_PROMPT_WITH_HISTORY = """You are a Personal Information Organizer, specialized in accurately storing facts, user memories, assistant memories and preferences. Your primary role is to extract relevant pieces of information from conversations and organize them into distinct, manageable facts. This allows for easy retrieval and personalization in future interactions. Below are the types of information you need to focus on and the detailed instructions on how to handle the input conversation.
@@ -826,9 +902,9 @@ class MemoryPipeline:
         dataset_suffix = f"_{dataset_name}" if dataset_name else ""
         full_suffix = f"{base_suffix}{dataset_suffix}"
         
-        self.semantic_col = f"memories{full_suffix}_v1"
-        self.fact_col = f"facts{full_suffix}_v1"
-        self.chunk_col = f"chunks{full_suffix}_v1"
+        self.semantic_col = f"memories{full_suffix}_fmc"
+        self.fact_col = f"facts{full_suffix}_fmc"
+        self.chunk_col = f"chunks{full_suffix}_fmc"
         
         self.dim = vector_db_config.dimension  # Save dimension as instance variable
         # 初始化操作次数计数器
@@ -1104,8 +1180,8 @@ class MemoryPipeline:
                 try:
                     response = llm_client.chat.completions.create(
                         # model="gemini-3-pro-preview",
-                        model="gpt-4o-mini",
-                        # model="gpt-4o",
+                        # model="gpt-4o-mini",
+                        model="gpt-4o",
                         messages=[
                                 {"role": "system", "content": formatted_prompt}, 
                                 {"role": "user", "content": user_input}],
@@ -1325,8 +1401,8 @@ class MemoryPipeline:
         def call_agent(system_prompt, user_content, tools, tool_choice="required"):
             try:
                 response = llm_client.chat.completions.create(
-                    # model="gpt-4o",
-                    model="gpt-4o-mini",
+                    model="gpt-4o",
+                    # model="gpt-4o-mini",
                     messages=[
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_content}
@@ -1933,7 +2009,7 @@ class MemoryPipeline:
         # 1. 搜索记忆集合，获取memoryA
         # ===========================
         mem_res = self.client.search(
-            self.semantic_col, [query_vec], filter=filter_expr, limit=top_k,  # 搜索更多记忆，避免遗漏
+            self.semantic_col, [query_vec], filter=filter_expr, limit=top_k*2,  # 搜索更多记忆，避免遗漏
             output_fields=["content", "memory_id", "created_at", "user_id"],  # 包含user_id字段用于调试
             similarity_threshold=similarity_threshold
         )
@@ -1966,7 +2042,7 @@ class MemoryPipeline:
         if use_fact_retrieval:
             # 搜索事实集合
             fact_res = self.client.search(
-                self.fact_col, [query_vec], filter=f"user_id == '{user_id}'", limit=top_k,  # 搜索更多事实，避免遗漏
+                self.fact_col, [query_vec], filter=f"user_id == '{user_id}'", limit=top_k*2,  # 搜索更多事实，避免遗漏
                 output_fields=["text", "timestamp", "fact_id", "details", "user_id", "embedding"]  # 添加embedding字段
             )
             
@@ -2037,6 +2113,58 @@ class MemoryPipeline:
             })
         
         return results
+
+    def _format_context(self, core_memory: str, retrieved_items: List[Dict]) -> str:
+        """
+        统一格式化上下文，包含 Core Memory, Semantic Memory 和 Facts。
+        """
+        context_parts = []
+        
+        # 1. Core Memory
+        if core_memory and core_memory.strip():
+            context_parts.append("### CORE MEMORY ###")
+            context_parts.append(core_memory.strip())
+            context_parts.append("") # 换行
+            
+        # 分离 Semantic Memory 和 Facts
+        memories = [item for item in retrieved_items if item.get("type") == "memory"]
+        facts = [item for item in retrieved_items if item.get("type") == "fact"]
+        
+        # 2. Semantic Memory
+        if memories:
+            context_parts.append("### SEMANTIC MEMORY ###")
+            for mem in memories:
+                # 简化时间戳格式: YYYY-MM-DD HH:MM
+                ts_str = datetime.fromtimestamp(mem['created_at'], timezone.utc).strftime('%Y-%m-%d %H:%M')
+                context_parts.append(f"- {ts_str}: {mem['content']}")
+            context_parts.append("") # 换行
+            
+        # 3. Facts
+        if facts:
+            context_parts.append("### FACTS ###")
+            for fact in facts:
+                # 简化时间戳格式: YYYY-MM-DD HH:MM
+                ts_str = datetime.fromtimestamp(fact['created_at'], timezone.utc).strftime('%Y-%m-%d %H:%M')
+                
+                # 格式化细节为 (Detail: xxx) 形式并内联
+                details = fact.get("details", [])
+                if details:
+                    if isinstance(details, list):
+                        details_str = "; ".join(details)
+                    else:
+                        details_str = str(details)
+                    
+                    if len(details_str) > 150:
+                        details_str = details_str[:150] + "..."
+                    
+                    # 内联格式: 时间: 内容 (Detail: 细节)
+                    context_parts.append(f"- {ts_str}: {fact['content']} (Detail: {details_str})")
+                else:
+                    context_parts.append(f"- {ts_str}: {fact['content']}")
+            context_parts.append("") # 换行
+            
+        return "\n".join(context_parts).strip()
+
     def _calculate_memory_score(self, memory, enhanced_search=False):
         """直接返回memory与query的内积，不考虑关联事实的相关性"""
         original_score = memory.get("original_score", 0)
@@ -2131,33 +2259,14 @@ def response_user(line, pipeline, retrieve_limit=20, max_facts_per_memory=3, use
     # 确保retrieved_memories不是None
     retrieved_memories = retrieved_memories or []
     
-    # 构建上下文，包含记忆和关联的事实
-    memories_with_facts = []
-    
-    for mem in retrieved_memories:
-        # 根据类型区分显示
-        m_type = mem.get("type", "memory").upper()
-        ts_str = datetime.fromtimestamp(mem['created_at'], timezone.utc).isoformat()
-        
-        # 添加内容
-        item_line = f"- [{ts_str}] [{m_type}] {mem['content']}"
-        memories_with_facts.append(item_line)
-        
-        # 添加细节（针对 Fact）
-        details = mem.get("details", [])
-        if details and m_type == "FACT":
-            details_str = "; ".join(details)
-            if len(details_str) > 150:
-                details_str = details_str[:150] + "..."
-            memories_with_facts.append(f"  └── 细节: {details_str}")
-    
-    memories_str = "\n".join(memories_with_facts)
+    # 使用统一的格式化方法构建上下文，包含 Core Memory
+    memories_str = pipeline._format_context(pipeline.core_memory, retrieved_memories)
     
     # 生成响应
     response = pipeline.generate_response(question, question_date_string, memories_str)
     answer = response.choices[0].message.content
     
-    return retrieved_memories, answer
+    return retrieved_memories, memories_str, answer
 
 def process_and_evaluate_user(line, user_index, infer=True, retrieve_limit: int = 3, extract_mode: str = "whole", vector_db_type="milvus", dataset_name="", max_history_turns: int = 5):
     """
@@ -2176,87 +2285,12 @@ def process_and_evaluate_user(line, user_index, infer=True, retrieve_limit: int 
         memory_counts = pipeline.process_user_memory_infer(line, retrieve_limit=retrieve_limit, extract_mode=extract_mode, user_id=user_id, max_history_turns=max_history_turns)
         
         # 生成问题响应，传递user_id
-        retrieved_memories, answer = response_user(line, pipeline, retrieve_limit, user_id=user_id)
+        retrieved_memories, memories_str, answer = response_user(line, pipeline, retrieve_limit, user_id=user_id)
         
         # 确保retrieved_memories不是None
         retrieved_memories = retrieved_memories or []
         
-        # 构建上下文字符串用于后续处理
-        memories_with_facts = []
-        
-        # 生成查询向量，用于计算事实与查询的相关性
-        query_vec = get_embedding(line.get("question", ""))
-        
-        for mem in retrieved_memories:
-            # 添加记忆内容
-            memory_line = f"- [{datetime.fromtimestamp(mem['created_at'], timezone.utc).isoformat()}] {mem['content']}"
-            memories_with_facts.append(memory_line)
 
-            # print("#"*50)
-            # print("mem:\n", mem)
-            # print("#"*50)
-            
-            # 添加关联的事实（如果有）
-            related_facts = mem.get("related_facts", [])
-            max_facts_per_memory = 3  # 每个记忆的事实数量限制
-            if related_facts:
-                # 计算每个事实与查询的相关性分数
-                fact_with_scores = []
-                for fact in related_facts:
-                    try:
-                        fact_vec = get_embedding(fact["text"])
-                        # 使用向量点积作为相关性分数
-                        dot_product = sum(a * b for a, b in zip(query_vec, fact_vec))
-                        fact_with_scores.append((fact, dot_product))
-                    except Exception as e:
-                        print(f"计算事实相关性失败: {e}")
-                        fact_with_scores.append((fact, 0))
-                
-                # 根据相关性分数对事实进行排序
-                # fact_with_scores.sort(key=lambda x: x[1], reverse=True)
-                
-                
-                # 添加排序后的事实，限制数量
-                for i, (fact, score) in enumerate(fact_with_scores[:max_facts_per_memory]):
-                    # 优化事实输出格式
-                    # fact_text = fact['text']
-                    # details = fact['details']
-                    
-                    # # 格式化细节
-                    # if details:
-                    #     # 将细节列表转换为更易读的格式
-                    #     details_str = "; ".join(details)
-                    #     # 如果细节太长，截断
-                    #     if len(details_str) > 100:
-                    #         details_str = details_str[:97] + "..."
-                    #     fact_line = f"  ├── [{i+1}] 事实: {fact_text}\n  │     细节: {details_str}"
-                    # else:
-                    #     fact_line = f"  ├── [{i+1}] 事实: {fact_text}"
-                    
-                    # memories_with_facts.append(fact_line)
-
-                        
-                    fact_text = fact['text']
-                    details = fact['details']
-                    # 获取并格式化事实的timestamp
-                    fact_timestamp = fact.get('timestamp')
-                    timestamp_str = f"[{datetime.fromtimestamp(fact_timestamp, timezone.utc).isoformat()}] " if fact_timestamp else ""
-                    
-                    # 格式化细节
-                    if details:
-                        # 将细节列表转换为更易读的格式
-                        details_str = "; ".join(details)
-                        # 如果细节太长，截断
-                        if len(details_str) > 150:
-                            details_str = details_str[:150] + "..."
-                        fact_line = f"  ├── [{i+1}] {timestamp_str}事实: {fact_text}\n  │     细节: {details_str}"
-                    else:
-                        fact_line = f"  ├── [{i+1}] {timestamp_str}事实: {fact_text}"
-                    
-                    memories_with_facts.append(fact_line)
-
-                    
-        memories_str = "\n".join(memories_with_facts)
         
         # 获取标准答案和问题类型
         golden_answer = line.get("answer")
@@ -2593,8 +2627,13 @@ if __name__ == "__main__":
                 print(f"用户 {result['index']}: {'✓' if result['is_correct'] else '✗'}")
                 print(f"  问题类型: {result.get('question_type', 'unknown')}")
                 print(f"  问题: {result['question']}")
-                print(f"  上下文: {result['context']}")
-                print(f"  回答: {result['answer']}...")
+                print(f"  上下文:")
+                if result['context'] and result['context'] != "N/A":
+                    for ctx_line in result['context'].split('\n'):
+                        print(f"    {ctx_line}")
+                else:
+                    print(f"    N/A")
+                print(f"  回答: {result['answer']}")
                 print(f"  标准答案: {result['golden_answer']}...")
                 print(f"  记忆操作: {result['counts']}")
                 print()

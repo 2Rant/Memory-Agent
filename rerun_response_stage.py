@@ -33,15 +33,34 @@ def process_response_only_user(line, user_index, retrieve_limit: int = 3, vector
         # 构建上下文字符串用于展示结果
         memories_with_facts = []
         for mem in retrieved_memories:
-            memory_line = f"- [{datetime.fromtimestamp(mem['created_at'], timezone.utc).isoformat()}] {mem['content']}"
+            # 简化时间戳格式: YYYY-MM-DD HH:MM
+            ts_str = datetime.fromtimestamp(mem['created_at'], timezone.utc).strftime('%Y-%m-%d %H:%M')
+            
+            # 检查是否有细节并内联
+            details = mem.get("details", [])
+            if details:
+                if isinstance(details, list):
+                    details_str = "; ".join(details)
+                else:
+                    details_str = str(details)
+                
+                if len(details_str) > 150:
+                    details_str = details_str[:150] + "..."
+                
+                # 事实内容 + 细节内联
+                memory_line = f"- {ts_str}: {mem['content']} (Detail: {details_str})"
+            else:
+                memory_line = f"- {ts_str}: {mem['content']}"
+                
             memories_with_facts.append(memory_line)
             
+            # 兼容旧逻辑中的 related_facts 展示（如果存在）
             related_facts = mem.get("related_facts", [])
             for i, fact in enumerate(related_facts[:3]):
                 fact_text = fact['text']
                 fact_timestamp = fact.get('timestamp')
-                timestamp_str = f"[{datetime.fromtimestamp(fact_timestamp, timezone.utc).isoformat()}] " if fact_timestamp else ""
-                memories_with_facts.append(f"  ├── [{i+1}] {timestamp_str}事实: {fact_text}")
+                f_ts_str = datetime.fromtimestamp(fact_timestamp, timezone.utc).strftime('%Y-%m-%d %H:%M') if fact_timestamp else ts_str
+                memories_with_facts.append(f"  ├── {f_ts_str}: {fact_text}")
         
         memories_str = "\n".join(memories_with_facts)
         

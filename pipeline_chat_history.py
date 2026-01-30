@@ -890,8 +890,8 @@ class MemoryPipeline:
                 try:
                     response = llm_client.chat.completions.create(
                         # model="gemini-3-pro-preview",
-                        # model="gpt-4o-mini",
-                        model="gpt-4o",
+                        model="gpt-4o-mini",
+                        # model="gpt-4o",
                         messages=[
                                 {"role": "system", "content": formatted_prompt}, 
                                 {"role": "user", "content": user_input}],
@@ -1061,7 +1061,7 @@ class MemoryPipeline:
             # 直接获取工具调用
             response = llm_client.chat.completions.create(
                 # model="gemini-3-pro-preview",
-                model="gpt-4o",
+                model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": system_msg},
                     {"role": "user", "content": user_content}

@@ -71,45 +71,48 @@ def main():
     
     # 要删除的集合名称
     collections_to_delete = [
-        # pipeline_v0.py创建的集合
-        "memories_v0",
-        "facts_v0",
-        "chunks_v0",
+        # # pipeline_v0.py创建的集合
+        # "memories_v0",
+        # "facts_v0",
+        # "chunks_v0",
         
-        # pipeline_v2.py创建的集合（测试模式）
-        "memories_test",
-        "facts_test",
-        "chunks_test",
+        # # pipeline_v2.py创建的集合（测试模式）
+        # "memories_test",
+        # "facts_test",
+        # "chunks_test",
         
-        # pipeline_v2.py创建的集合（评估模式）
-        "memories_eval",
-        "facts_eval",
-        "chunks_eval",
+        # # pipeline_v2.py创建的集合（评估模式）
+        # "memories_eval",
+        # "facts_eval",
+        # "chunks_eval",
         
-        # 带数据集后缀的集合（示例）
-        "memories_test_longmemeval",
-        "facts_test_longmemeval",
-        "chunks_test_longmemeval",
-        "memories_eval_longmemeval",
-        "facts_eval_longmemeval",
-        "chunks_eval_longmemeval",
-        "memories_longmemeval",
-        "facts_longmemeval",
-        "chunks_longmemeval",
-        "facts_test_longmemeval_v1",
-        "memories_test_longmemeval_v1",
-        "chunks_test_longmemeval_v1",
-        "facts_longmemeval_v2",
-        "memories_longmemeval_v2",
-        "chunks_longmemeval_v2",
-        "chunks_test_longmemeval_v2",
-        "facts_test_longmemeval_v2",
-        "memories_test_longmemeval_v2",
-        "chunks_longmemeval_v1",
-        # 其他可能的集合名称
-        "memories",
-        "facts",
-        "chunks"
+        # # 带数据集后缀的集合（示例）
+        # "memories_test_longmemeval",
+        # "facts_test_longmemeval",
+        # "chunks_test_longmemeval",
+        # "memories_eval_longmemeval",
+        # "facts_eval_longmemeval",
+        # "chunks_eval_longmemeval",
+        # "memories_longmemeval",
+        # "facts_longmemeval",
+        # "chunks_longmemeval",
+        # "facts_test_longmemeval_v1",
+        # "memories_test_longmemeval_v1",
+        # "chunks_test_longmemeval_v1",
+        # "facts_longmemeval_v2",
+        # "memories_longmemeval_v2",
+        # "chunks_longmemeval_v2",
+        # "chunks_test_longmemeval_v2",
+        # "facts_test_longmemeval_v2",
+        # "memories_test_longmemeval_v2",
+        # "chunks_longmemeval_v1",
+        # # 其他可能的集合名称
+        # "memories",
+        # "facts",
+        # "chunks"
+        "memories_test_longmemeval_fmc",
+        "facts_test_longmemeval_fmc",
+        "chunks_test_longmemeval_fmc",
     ]
     
     # 删除所有相关集合
