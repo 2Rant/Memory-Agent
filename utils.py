@@ -337,6 +337,15 @@ Output: {{"facts" : [
     {{"fact": "Favourite movies are Inception and Interstellar", "details": []}}
 ]}}
 
+Input:
+user: Can you tell me about the Apollo project objectives?
+assistant: The Apollo project aims to: 1) Land humans on the Moon, 2) Bring them back safely, and 3) Conduct scientific exploration.
+Output: {{"facts" : [
+    {{"fact": "[Assistant] Apollo project aims to land humans on the Moon", "details": ["Project: Apollo", "Objective: 1"]}},
+    {{"fact": "[Assistant] Apollo project aims to bring humans back safely", "details": ["Project: Apollo", "Objective: 2"]}},
+    {{"fact": "[Assistant] Apollo project aims to conduct scientific exploration", "details": ["Project: Apollo", "Objective: 3"]}}
+]}}
+
 Return the facts and preferences in a json format as shown above.
 
 Remember the following:

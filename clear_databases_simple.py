@@ -110,9 +110,12 @@ def main():
         # "memories",
         # "facts",
         # "chunks"
-        "memories_test_longmemeval_fmc",
-        "facts_test_longmemeval_fmc",
-        "chunks_test_longmemeval_fmc",
+        # "memories_test_longmemeval_fmc",
+        # "facts_test_longmemeval_fmc",
+        # "chunks_test_longmemeval_fmc",
+        'memories_test_ssa_debug_fmc',
+        'facts_test_ssa_debug_fmc',
+        'chunks_test_ssa_debug_fmc',
     ]
     
     # 删除所有相关集合
