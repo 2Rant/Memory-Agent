@@ -977,7 +977,7 @@ class LocalJsonlDB:
         return results
 
 class MemoryPipeline:
-    def __init__(self, config=None, vector_db_type="milvus", clear_db=False, mode='eval', dataset_name=""):
+    def __init__(self, config=None, vector_db_type="milvus", clear_db=False, mode='eval', dataset_name="", extract_only=False):
         """初始化MemoryPipeline
         
         Args:
@@ -985,7 +985,10 @@ class MemoryPipeline:
             vector_db_type: 指定使用的向量数据库类型，支持"milvus"或"qdrant"
             clear_db: 是否清空数据库，默认为False
             dataset_name: 数据集名称，用于集合名称后缀，默认为空
+            extract_only: 是否仅进行提取，跳过后续的预处理、检索和执行步骤
         """
+        self.extract_only = extract_only
+
         # 如果没有提供配置，创建默认配置
         if config is None:
             config = MilvusConfig()
@@ -1006,7 +1009,7 @@ class MemoryPipeline:
         self.fact_col = f"facts{full_suffix}_v1"
         self.chunk_col = f"chunks{full_suffix}_v1"
         
-        self.dim = vector_db_config.dimension  # Save dimension as instance variable
+        self.dim = self.config.dimension  # Save dimension as instance variable
         # 初始化操作次数计数器
         self.operation_counts = {"ADD": 0, "UPDATE": 0, "DELETE": 0, "INFER": 0, "NOOP": 0}
         # 添加带历史支持的memreader prompt
@@ -2071,7 +2074,14 @@ class MemoryPipeline:
     
     def process(self, text, retrieve_limit: int = 3, extract_mode: str = "whole", user_id: str = 'default', similarity_threshold: float = None, timestamp: int = None, max_history_turns: int = 5):
         res = self.step_extract(text, extract_mode=extract_mode, timestamp=timestamp, max_history_turns=max_history_turns)
+        
+        # 如果是extract_only模式，提取完直接返回，不进行后续处理（节省Embedding成本）
+        if self.extract_only:
+            print(f"   🛑 [Extract Only] Skipping preprocessing, retrieval and execution.")
+            return
+
         if not res['new_facts']: return
+
         
         # 预处理事实，检查是否已存在
         res = self.step_preprocess_facts(res, user_id=user_id)
@@ -2359,7 +2369,7 @@ def response_user(line, pipeline, retrieve_limit=20, max_facts_per_memory=3, use
     
     return retrieved_memories, answer
 
-def process_and_evaluate_user(line, user_index, infer=True, retrieve_limit: int = 3, extract_mode: str = "whole", vector_db_type="milvus", dataset_name="", max_history_turns: int = 5):
+def process_and_evaluate_user(line, user_index, infer=True, retrieve_limit: int = 3, extract_mode: str = "whole", vector_db_type="milvus", dataset_name="", max_history_turns: int = 5, extract_only: bool = False):
     """
     封装单个用户的所有处理步骤，以便并行执行。
     返回一个包含所有统计信息的字典。
@@ -2370,11 +2380,25 @@ def process_and_evaluate_user(line, user_index, infer=True, retrieve_limit: int 
         
         # 为每个用户创建独立的pipeline实例，避免多线程竞争
         # 注意：每个用户的pipeline实例不应该清空数据库，clear_db固定为False
-        pipeline = MemoryPipeline(vector_db_type=vector_db_type, clear_db=False, dataset_name=dataset_name)
+        pipeline = MemoryPipeline(vector_db_type=vector_db_type, clear_db=False, dataset_name=dataset_name, extract_only=extract_only)
         
         # 处理用户记忆会话，传递user_id、extract_mode和max_history_turns
         memory_counts = pipeline.process_user_memory_infer(line, retrieve_limit=retrieve_limit, extract_mode=extract_mode, user_id=user_id, max_history_turns=max_history_turns)
         
+        # 如果是提取模式，直接返回，跳过生成回复
+        if extract_only:
+            return {
+                "index": user_index,
+                "is_correct": False, # 不进行评估
+                "counts": memory_counts,
+                "question": line.get("question", "N/A"),
+                "question_type": line.get("question_type", "unknown"),
+                "answer": "Extract Only Mode - No Answer Generated",
+                "golden_answer": line.get("answer", "N/A"),
+                "retrieved_memories": [],
+                "context": "Extract Only Mode - No Context",
+            }
+
         # 生成问题响应，传递user_id
         retrieved_memories, answer = response_user(line, pipeline, retrieve_limit, user_id=user_id)
         
@@ -2511,10 +2535,11 @@ if __name__ == "__main__":
     parser.add_argument("--clear-db", action="store_true", help="运行前清空数据库")
     parser.add_argument("--data-path", type=str, help="指定数据文件路径")
     parser.add_argument("--dataset-type", type=str, default="longmemeval", choices=["longmemeval", "hotpotqa"], help="指定数据集类型")
+    parser.add_argument("--extract-only", action="store_true", help="仅进行提取，跳过预处理、检索和执行步骤，结果记录在memreader_log.jsonl中")
     args = parser.parse_args()
     
     # 初始化内存管道
-    pipeline = MemoryPipeline(vector_db_type=args.vector_db_type, clear_db=args.clear_db, mode='eval' if args.eval else 'test', dataset_name=args.dataset_type)
+    pipeline = MemoryPipeline(vector_db_type=args.vector_db_type, clear_db=args.clear_db, mode='eval' if args.eval else 'test', dataset_name=args.dataset_type, extract_only=args.extract_only)
     
     if args.eval:
         # 评估模式
@@ -2633,9 +2658,9 @@ if __name__ == "__main__":
             
             # 并行处理用户
             with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
-                # 提交任务 - 确保参数顺序正确：line, idx, args.infer, args.retrieve_limit, args.extract_mode, args.vector_db_type, args.dataset_type, args.max_history_turns
+                # 提交任务 - 确保参数顺序正确：line, idx, args.infer, args.retrieve_limit, args.extract_mode, args.vector_db_type, args.dataset_type, args.max_history_turns, args.extract_only
                 # 注意：这里clear_db固定为False，只在主函数中执行一次清空操作
-                future_to_user = {executor.submit(process_and_evaluate_user, line, idx, args.infer, args.retrieve_limit, args.extract_mode, args.vector_db_type, args.dataset_type, args.max_history_turns): (line, idx) for idx, line in enumerate(lines)}
+                future_to_user = {executor.submit(process_and_evaluate_user, line, idx, args.infer, args.retrieve_limit, args.extract_mode, args.vector_db_type, args.dataset_type, args.max_history_turns, args.extract_only): (line, idx) for idx, line in enumerate(lines)}
                 
                 # 处理结果
                 for future in tqdm(as_completed(future_to_user), total=len(future_to_user)):
@@ -2737,7 +2762,7 @@ if __name__ == "__main__":
             # 并行处理用户
             with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
                 # 提交任务，包含extract_mode和dataset_type参数
-                future_to_user = {executor.submit(process_and_evaluate_user, line, idx, args.infer, args.retrieve_limit, args.extract_mode, args.vector_db_type, args.dataset_type): (line, idx) for idx, line in enumerate(lines)}
+                future_to_user = {executor.submit(process_and_evaluate_user, line, idx, args.infer, args.retrieve_limit, args.extract_mode, args.vector_db_type, args.dataset_type, args.max_history_turns, args.extract_only): (line, idx) for idx, line in enumerate(lines)}
                 
                 # 处理结果
                 for future in tqdm(as_completed(future_to_user), total=len(future_to_user)):

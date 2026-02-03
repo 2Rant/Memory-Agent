@@ -105,7 +105,9 @@ def main():
         # "chunks_test_longmemeval_v2",
         # "facts_test_longmemeval_v2",
         # "memories_test_longmemeval_v2",
-        # "chunks_longmemeval_v1",
+        "chunks_longmemeval_v1",
+        "facts_longmemeval_v1",
+        "memories_longmemeval_v1",
         # # 其他可能的集合名称
         # "memories",
         # "facts",
