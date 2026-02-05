@@ -32,7 +32,7 @@ LLM_MODE = os.getenv("LLM_MODE", "online")
 
 if LLM_MODE == "local":
     # Initialize client for Local LLM
-    GENERATION_MODEL = os.getenv("LOCAL_LLM_MODEL", "qwen-8b")
+    GENERATION_MODEL = os.getenv("LOCAL_LLM_MODEL", "Qwen/Qwen3-32B")
     llm_client = OpenAI(
         api_key=os.getenv("LOCAL_LLM_API_KEY", "EMPTY"), 
         base_url=os.getenv("LOCAL_LLM_BASE_URL", "http://0.0.0.0:8088/v1")
@@ -47,13 +47,25 @@ else:
     )
     print(f"🌐 Using OpenAI for generation. model: {GENERATION_MODEL}")
 
-# Initialize a separate client for embeddings (always OpenAI)
+# Separate Model Configuration
+MEMREADER_MODEL = os.getenv("MEMREADER_MODEL", GENERATION_MODEL)
+MEMORY_MANAGER_MODEL = os.getenv("MEMORY_MANAGER_MODEL", GENERATION_MODEL)
+print(f"🔹 MemReader Model: {MEMREADER_MODEL}")
+print(f"🔹 Memory Manager Model: {MEMORY_MANAGER_MODEL}")
+
+# Initialize a separate client for embeddings
+EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY", "")
+EMBEDDING_BASE_URL = os.getenv("EMBEDDING_BASE_URL", "http://localhost:8000/v1") # 默认本地API地址
+
 embedding_client = OpenAI(
-    api_key=os.getenv("OPENAI_API_KEY")
+    api_key=EMBEDDING_API_KEY,
+    base_url=EMBEDDING_BASE_URL
 )
 
-# Always use text-embedding-3-small as requested
-EMBEDDING_MODEL = "text-embedding-3-small"
+# Use the model specified by user
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-0.6B")
+EMBEDDING_DIMENSION = int(os.getenv("EMBEDDING_DIMENSION", "1024")) # Default to 1024 for Qwen3-0.6B
+print(f"🔹 Embedding Model: {EMBEDDING_MODEL}, Dimension: {EMBEDDING_DIMENSION}")
 
 
 MEMORY_MANAGER_PROMPT = """You are a specialized Memory Manager Agent.
@@ -755,7 +767,11 @@ CORE_MEMORY_TOOLS = [
 def get_embedding(text: str) -> List[float]:
     text = text.replace("\n", " ")
     # Use embedding_client (always OpenAI) instead of llm_client (which might be local)
-    return embedding_client.embeddings.create(input=[text], model=EMBEDDING_MODEL).data[0].embedding
+    try:
+        return embedding_client.embeddings.create(input=[text], model=EMBEDDING_MODEL, dimensions=EMBEDDING_DIMENSION).data[0].embedding
+    except Exception:
+        # Fallback if dimensions arg is not supported or other error, try without dimensions
+        return embedding_client.embeddings.create(input=[text], model=EMBEDDING_MODEL).data[0].embedding
 
 @dataclass
 class MilvusConfig:
@@ -764,7 +780,7 @@ class MilvusConfig:
     user_name: str = os.getenv("MILVUS_USER_NAME")
     # password: str = os.getenv("MILVUS_PASSWORD")
     db_name: str = os.getenv("MILVUS_DB_NAME", "default")
-    dimension: int = 1536
+    dimension: int = EMBEDDING_DIMENSION
     
     def to_vector_db_config(self, vector_db_type: str = "milvus") -> VectorDBConfig:
         """转换为VectorDBConfig"""
@@ -798,7 +814,7 @@ class MilvusConfig:
 # 1. Pipeline Class
 # ==========================================
 class LocalJsonlDB:
-    def __init__(self, storage_dir="local_db"):
+    def __init__(self, storage_dir="./local_mem_db"):
         self.storage_dir = storage_dir
         if not os.path.exists(storage_dir):
             os.makedirs(storage_dir)
@@ -888,6 +904,52 @@ class LocalJsonlDB:
         
         print(f"[LocalJsonlDB] Upserted {len(data)} items into {collection_name}")
 
+    def _match_filter(self, item, filter_str):
+        """Helper to evaluate filter string against an item"""
+        if not filter_str:
+            return True
+        
+        # Split by ' and ' to handle multiple conditions
+        # Note: This is a simple parser and assumes ' and ' is the only logical operator used
+        conditions = filter_str.split(' and ')
+        
+        for cond in conditions:
+            cond = cond.strip()
+            if not cond:
+                continue
+                
+            if " in [" in cond:
+                # Handle "field in ['a', 'b']"
+                try:
+                    parts = cond.split(" in [")
+                    field = parts[0].strip()
+                    val_content = parts[1].split("]")[0]
+                    # Handle quoted strings in list
+                    vals = [v.strip().strip("'").strip('"') for v in val_content.split(",")]
+                    if str(item.get(field)) not in vals:
+                        return False
+                except:
+                    print(f"⚠️ Filter parse error (IN): {cond}")
+                    return False
+                    
+            elif "==" in cond:
+                # Handle "field == 'value'"
+                try:
+                    parts = cond.split("==")
+                    field = parts[0].strip()
+                    val = parts[1].strip().strip("'").strip('"')
+                    if str(item.get(field)) != val:
+                        return False
+                except:
+                    print(f"⚠️ Filter parse error (==): {cond}")
+                    return False
+            else:
+                # Ignore unsupported or complex filters for now, defaulting to match
+                # (This might include non-filtering data, but safer than crashing)
+                pass
+                
+        return True
+
     def search(self, collection_name, vectors, filter=None, limit=5, output_fields=None, similarity_threshold=None):
         if collection_name not in self.collections:
             self.load_collection(collection_name)
@@ -896,16 +958,8 @@ class LocalJsonlDB:
         if not items:
             return [[]]
             
-        # Parse filter (very basic support)
-        filtered_items = items
-        if filter:
-            # Basic parsing: "user_id == 'default'"
-            if "user_id ==" in filter:
-                uid = filter.split("==")[1].strip().strip("'").strip('"')
-                filtered_items = [i for i in filtered_items if i.get("user_id") == uid]
-            if "status ==" in filter:
-                status = filter.split("status ==")[1].split("and")[0].strip().strip("'").strip('"')
-                filtered_items = [i for i in filtered_items if i.get("status") == status]
+        # Filter items using improved matcher
+        filtered_items = [item for item in items if self._match_filter(item, filter)]
                 
         if not filtered_items:
             return [[]]
@@ -951,22 +1005,10 @@ class LocalJsonlDB:
             self.load_collection(collection_name)
             
         items = self.collections[collection_name]
-        filtered_items = items
         
-        if filter:
-             # Support "id in [...]"
-             if " in [" in filter:
-                 field = filter.split(" in [")[0].strip()
-                 val_str = filter.split(" in [")[1].split("]")[0]
-                 vals = [v.strip().strip("'").strip('"') for v in val_str.split(",")]
-                 filtered_items = [i for i in filtered_items if i.get(field) in vals]
-             # Support "id == '...'"
-             elif "==" in filter:
-                 parts = filter.split("==")
-                 field = parts[0].strip()
-                 val = parts[1].strip().strip("'").strip('"')
-                 filtered_items = [i for i in filtered_items if str(i.get(field)) == val]
-
+        # Filter items using improved matcher
+        filtered_items = [item for item in items if self._match_filter(item, filter)]
+        
         results = []
         for item in filtered_items:
             if output_fields:
@@ -975,6 +1017,24 @@ class LocalJsonlDB:
                 results.append(item)
                 
         return results
+
+    def delete(self, collection_name, filter=None):
+        """Simulate delete by filtering out items"""
+        if collection_name not in self.collections:
+            return
+            
+        items = self.collections[collection_name]
+        # Keep items that DO NOT match the filter
+        kept_items = [item for item in items if not self._match_filter(item, filter)]
+        
+        self.collections[collection_name] = kept_items
+        
+        # Rewrite file
+        path = os.path.join(self.storage_dir, f"{collection_name}.jsonl")
+        with open(path, 'w', encoding='utf-8') as f:
+            for item in kept_items:
+                f.write(json.dumps(item, ensure_ascii=False) + "\n")
+        print(f"[LocalJsonlDB] Deleted items from {collection_name}, remaining: {len(kept_items)}")
 
 class MemoryPipeline:
     def __init__(self, config=None, vector_db_type="milvus", clear_db=False, mode='eval', dataset_name="", extract_only=False):
@@ -991,7 +1051,7 @@ class MemoryPipeline:
 
         # 如果没有提供配置，创建默认配置
         if config is None:
-            config = MilvusConfig()
+            config = VectorDBConfig(uri="local")
         
         self.config = config
         
@@ -1017,8 +1077,102 @@ class MemoryPipeline:
         
         # Initialize Core Memory
         self.core_memory = ""
+        # 初始化 Core Memory 存储路径
+        if hasattr(self.client, 'storage_dir'):
+            self.core_memory_file = os.path.join(self.client.storage_dir, "core_memory.json")
+        else:
+            self.core_memory_file = "core_memory.json"
         
         self._init_collections(clear_db=clear_db)
+
+    def _load_core_memory(self, user_id: str):
+        """加载特定用户的 Core Memory"""
+        self.core_memory = ""
+        if os.path.exists(self.core_memory_file):
+            try:
+                with open(self.core_memory_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    self.core_memory = data.get(user_id, "")
+                print(f"   🧠 Loaded Core Memory for {user_id} ({len(self.core_memory)} chars)")
+            except Exception as e:
+                print(f"   ⚠️ Error loading Core Memory: {e}")
+
+    def _save_core_memory(self, user_id: str):
+        """保存特定用户的 Core Memory"""
+        data = {}
+        if os.path.exists(self.core_memory_file):
+            try:
+                with open(self.core_memory_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+            except Exception:
+                data = {}
+        
+        data[user_id] = self.core_memory
+        
+        try:
+            with open(self.core_memory_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            print(f"   💾 Saved Core Memory for {user_id}")
+        except Exception as e:
+            print(f"   ⚠️ Error saving Core Memory: {e}")
+
+    def _format_context(self, core_memory, retrieved_memories):
+        """
+        统一格式化上下文，包含 Core Memory, Semantic Memory 和 Facts。
+        """
+        context_parts = []
+        
+        # 1. Core Memory
+        if core_memory and core_memory.strip():
+            context_parts.append("### CORE MEMORY ###")
+            context_parts.append(core_memory.strip())
+            context_parts.append("") # 换行
+            
+        # 分离 Semantic Memory 和 Facts
+        memories = [item for item in retrieved_memories if item.get("type", "memory") == "memory"]
+        facts = [item for item in retrieved_memories if item.get("type") == "fact"]
+        
+        # 2. Semantic Memory
+        if memories:
+            context_parts.append("### SEMANTIC MEMORY ###")
+            for mem in memories:
+                # 简化时间戳格式: YYYY-MM-DD HH:MM
+                try:
+                    ts_str = datetime.fromtimestamp(mem['created_at'], timezone.utc).strftime('%Y-%m-%d %H:%M')
+                except:
+                    ts_str = "Unknown Time"
+                context_parts.append(f"- {ts_str}: {mem['content']}")
+            context_parts.append("") # 换行
+            
+        # 3. Facts
+        if facts:
+            context_parts.append("### FACTS ###")
+            for fact in facts:
+                # 简化时间戳格式: YYYY-MM-DD HH:MM
+                try:
+                    ts_str = datetime.fromtimestamp(fact['created_at'], timezone.utc).strftime('%Y-%m-%d %H:%M')
+                except:
+                    ts_str = "Unknown Time"
+                
+                # 格式化细节为 (Detail: xxx) 形式并内联
+                details = fact.get("details", [])
+                if details:
+                    if isinstance(details, list):
+                        details_str = "; ".join(details)
+                    else:
+                        details_str = str(details)
+                    
+                    if len(details_str) > 150:
+                        details_str = details_str[:150] + "..."
+                    
+                    # 内联格式: 时间: 内容 (Detail: 细节)
+                    context_parts.append(f"- {ts_str}: {fact['content']} (Detail: {details_str})")
+                else:
+                    context_parts.append(f"- {ts_str}: {fact['content']}")
+            context_parts.append("") # 换行
+            
+        return "\n".join(context_parts).strip()
+
 
     def _init_collections(self, clear_db=False):
         dim = self.config.dimension
@@ -1156,7 +1310,7 @@ class MemoryPipeline:
             print("All collections loaded successfully.")
 
     # --- Step 1: Extract ---
-    def _log_extraction(self, chunk_text: str, facts: List[Dict]):
+    def _log_extraction(self, chunk_text: str, facts: List[Dict], turn_details: List[Dict] = None):
         """记录提取的事实到日志文件"""
         log_file = "memreader_log.jsonl"
         try:
@@ -1165,13 +1319,16 @@ class MemoryPipeline:
                 "input_text": chunk_text,
                 "extracted_facts": facts
             }
+            if turn_details:
+                entry["turn_details"] = turn_details
+                
             with open(log_file, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
             print(f"   📝 [User Request] Logged extracted facts to {log_file}")
         except Exception as e:
             print(f"   ⚠️ Logging failed: {e}")
 
-    def step_extract(self, session_or_text, extract_mode: str = "whole", timestamp: int = None, max_history_turns: int = 5) -> Dict:
+    def step_extract(self, session_or_text, extract_mode: str = "whole", timestamp: int = None, max_history_turns: int = 5, dataset_question: str = "") -> Dict:
         """
         从对话中提取事实
         
@@ -1182,6 +1339,7 @@ class MemoryPipeline:
                 - "turn": 按轮次提取，每轮user-assistant对话单独提取，并附上chat history
             timestamp: 时间戳，可选，默认使用当前时间
             max_history_turns: 聊天历史的最大轮数，仅在extract_mode="turn"时生效
+            dataset_question: 数据集中的问题，用于日志记录
         
         Returns:
             包含提取事实的字典
@@ -1197,6 +1355,7 @@ class MemoryPipeline:
             try:
                 all_facts = []
                 chat_history = []  # 保存完整的对话历史
+                session_turn_details = [] # 保存每一轮的详细提取结果
                 
                 # 遍历session list，成对形成turn
                 for i in range(0, len(session_or_text), 2):
@@ -1224,6 +1383,14 @@ class MemoryPipeline:
                             # 对单轮对话提取事实，传递timestamp和chat_history参数
                             turn_facts = self._extract_single_turn(turn_text, timestamp, history_text)
                             
+                            # 记录该轮的详细信息
+                            session_turn_details.append({
+                                "turn_idx": len(chat_history),
+                                "question": dataset_question,
+                                "turn_text": turn_text,
+                                "facts": turn_facts
+                            })
+                            
                             # 为每个事实添加轮次信息和chat history引用
                             for fact in turn_facts:
                                 fact["turn_idx"] = len(chat_history)  # 轮次从1开始
@@ -1234,7 +1401,7 @@ class MemoryPipeline:
                     
                 # 将session转换为文本格式，用于返回
                 chunk_text = parse_messages(session_or_text)
-                self._log_extraction(chunk_text, all_facts)
+                self._log_extraction(chunk_text, all_facts, turn_details=session_turn_details)
                 return {"chunk_id": str(uuid.uuid4()), "chunk_text": chunk_text, "new_facts": all_facts, "timestamp": timestamp, "chat_history": chat_history}
             except Exception as e:
                 print(f"按轮次处理session失败，回退到whole模式: {e}")
@@ -1283,10 +1450,6 @@ class MemoryPipeline:
             if not user_input.strip():
                 print("⚠️ Warning: user_input is empty, skipping extraction.")
                 return []
-                
-            # 调试：打印 prompt 和 user_input 的长度，确认内容不为空
-            # print(f"DEBUG: formatted_prompt length: {len(formatted_prompt)}")
-            # print(f"DEBUG: user_input length: {len(user_input)}")
             
             # 再次检查 formatted_prompt 是否为空
             if not formatted_prompt.strip():
@@ -1296,17 +1459,33 @@ class MemoryPipeline:
             max_retries = 3
             fact_objects = []
             
+            import traceback # Import here to ensure availability
+            
             for attempt in range(max_retries):
                 try:
-                    response = llm_client.chat.completions.create(
-                        # model="gemini-3-pro-preview",
-                        model=GENERATION_MODEL,
-                        # model="gpt-4o",
-                        messages=[
-                                {"role": "system", "content": formatted_prompt}, 
-                                {"role": "user", "content": user_input}],
-                        response_format={"type": "json_object"}, temperature=0
-                    )
+                    # 尝试调用 LLM
+                    # 注意：部分本地模型可能不支持 response_format={"type": "json_object"}
+                    # 这里做一个简单的兼容性处理
+                    try:
+                        response = llm_client.chat.completions.create(
+                            model=MEMREADER_MODEL,
+                            messages=[
+                                    {"role": "system", "content": formatted_prompt}, 
+                                    {"role": "user", "content": user_input}],
+                            response_format={"type": "json_object"}, 
+                            temperature=0
+                        )
+                    except Exception as e_format:
+                        # 如果是参数错误（如不支持 json_object），尝试不带 format 参数
+                        # print(f"⚠️ Attempt {attempt + 1}: 'json_object' format might not be supported, retrying without it. Error: {e_format}")
+                        response = llm_client.chat.completions.create(
+                            model=MEMREADER_MODEL,
+                            messages=[
+                                    {"role": "system", "content": formatted_prompt}, 
+                                    {"role": "user", "content": user_input}],
+                            temperature=0
+                        )
+
                     raw_content = response.choices[0].message.content
                     
                     if not raw_content:
@@ -1329,7 +1508,6 @@ class MemoryPipeline:
                     else:
                         raise
                 except Exception as e:
-                    import traceback
                     print(f"⚠️ Attempt {attempt + 1}/{max_retries}: API Error: {e}")
                     traceback.print_exc()
                     if attempt < max_retries - 1:
@@ -1349,8 +1527,11 @@ class MemoryPipeline:
                         "chat_history_length": len(chat_history.split("\n")) if chat_history else 0  # 添加历史长度
                     })
         except Exception as e: 
-            print(f"Extraction failed: {e}")
-            facts = [{"text": text, "details": [], "timestamp": timestamp, "chat_history_length": len(chat_history.split("\n")) if chat_history else 0}]
+            print(f"❌ Extraction failed: {e}")
+            import traceback
+            traceback.print_exc()
+            # 失败时返回空列表，而不是原始文本，避免污染日志
+            facts = []
         return facts
 
     # --- Step 2: Retrieve ---    
@@ -1522,7 +1703,7 @@ class MemoryPipeline:
             try:
                 response = llm_client.chat.completions.create(
                     # model="gpt-4o",
-                    model=GENERATION_MODEL,
+                    model=MEMORY_MANAGER_MODEL,
                     messages=[
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_content}
@@ -1874,7 +2055,8 @@ class MemoryPipeline:
 
             elif action == "CORE_MEMORY_ADD":
                 content = decision['content']
-                self.core_memory += f"\n{content}"
+                self.core_memory += f"{content}"
+                self._save_core_memory(decision.get('user_id', 'default'))
                 print(f"   🧠 Core Memory ADD: {content[:]}...")
 
             elif action == "CORE_MEMORY_UPDATE":
@@ -1884,6 +2066,7 @@ class MemoryPipeline:
                 # 尝试精确匹配（忽略首尾空格）
                 if old_text in self.core_memory:
                     self.core_memory = self.core_memory.replace(old_text, new_text)
+                    self._save_core_memory(decision.get('user_id', 'default'))
                     print(f"   🧠 Core Memory UPDATE: {old_text[:]}... -> {new_text[:]}...")
                 else:
                     # 尝试模糊匹配：忽略标点符号和空白字符
@@ -1904,6 +2087,7 @@ class MemoryPipeline:
             elif action == "CORE_MEMORY_REWRITE":
                 new_block = decision['new_block_content']
                 self.core_memory = new_block
+                self._save_core_memory(decision.get('user_id', 'default'))
                 print(f"   🧠 Core Memory REWRITE.")
 
         # --- Final Step: Save ALL new facts (independent of memories) ---
@@ -2072,8 +2256,8 @@ class MemoryPipeline:
         extract_result['new_facts'] = processed_facts
         return extract_result
     
-    def process(self, text, retrieve_limit: int = 3, extract_mode: str = "whole", user_id: str = 'default', similarity_threshold: float = None, timestamp: int = None, max_history_turns: int = 5):
-        res = self.step_extract(text, extract_mode=extract_mode, timestamp=timestamp, max_history_turns=max_history_turns)
+    def process(self, text, retrieve_limit: int = 3, extract_mode: str = "whole", user_id: str = 'default', similarity_threshold: float = None, timestamp: int = None, max_history_turns: int = 5, dataset_question: str = ""):
+        res = self.step_extract(text, extract_mode=extract_mode, timestamp=timestamp, max_history_turns=max_history_turns, dataset_question=dataset_question)
         
         # 如果是extract_only模式，提取完直接返回，不进行后续处理（节省Embedding成本）
         if self.extract_only:
@@ -2099,10 +2283,14 @@ class MemoryPipeline:
         
     def process_user_memory_infer(self, line, retrieve_limit: int = 3, extract_mode: str = "whole", user_id: str = 'default', similarity_threshold: float = None, max_history_turns: int = 5):
         """处理用户记忆会话，支持longmemeval数据集格式"""
+        # 加载用户的Core Memory
+        self._load_core_memory(user_id)
+        
         # 重置操作计数，确保每个用户的计数独立
         self.operation_counts = {"ADD": 0, "UPDATE": 0, "DELETE": 0, "INFER": 0, "NOOP": 0}
         dates = line.get("haystack_dates")
         sessions = line.get("haystack_sessions")
+        dataset_question = line.get("question", "")
 
         for session_id, session in enumerate(sessions):
             date = dates[session_id] + " UTC"
@@ -2115,7 +2303,7 @@ class MemoryPipeline:
             
             # 直接传递session对象给process方法，而不是转换为文本
             # 使用现有的process方法处理会话消息，传递user_id、similarity_threshold和timestamp
-            self.process(session, retrieve_limit=retrieve_limit, extract_mode=extract_mode, user_id=user_id, similarity_threshold=similarity_threshold, timestamp=timestamp, max_history_turns=max_history_turns)
+            self.process(session, retrieve_limit=retrieve_limit, extract_mode=extract_mode, user_id=user_id, similarity_threshold=similarity_threshold, timestamp=timestamp, max_history_turns=max_history_turns, dataset_question=dataset_question)
         
         # 返回操作次数统计
         return self.operation_counts
@@ -2335,41 +2523,25 @@ def response_user(line, pipeline, retrieve_limit=20, max_facts_per_memory=3, use
     else:
         enhanced_top_k = retrieve_limit
     
+    # 加载 Core Memory
+    pipeline._load_core_memory(user_id)
+
     # 搜索记忆，传递user_id、threshold和enhanced_search参数
     retrieved_memories = pipeline.search_memories(question, top_k=enhanced_top_k, user_id=user_id, threshold=threshold, enhanced_search=enhanced_search)
     
     # 确保retrieved_memories不是None
     retrieved_memories = retrieved_memories or []
     
-    # 构建上下文，包含记忆和关联的事实
-    memories_with_facts = []
-    
-    for mem in retrieved_memories:
-        # 根据类型区分显示
-        m_type = mem.get("type", "memory").upper()
-        ts_str = datetime.fromtimestamp(mem['created_at'], timezone.utc).isoformat()
-        
-        # 添加内容
-        item_line = f"- [{ts_str}] [{m_type}] {mem['content']}"
-        memories_with_facts.append(item_line)
-        
-        # 添加细节（针对 Fact）
-        details = mem.get("details", [])
-        if details and m_type == "FACT":
-            details_str = "; ".join(details)
-            if len(details_str) > 150:
-                details_str = details_str[:150] + "..."
-            memories_with_facts.append(f"  └── 细节: {details_str}")
-    
-    memories_str = "\n".join(memories_with_facts)
+    # 使用统一的格式化方法，包含 Core Memory 和 Retrieved Memories
+    memories_str = pipeline._format_context(pipeline.core_memory, retrieved_memories)
     
     # 生成响应
     response = pipeline.generate_response(question, question_date_string, memories_str)
     answer = response.choices[0].message.content
     
-    return retrieved_memories, answer
+    return retrieved_memories, memories_str, answer
 
-def process_and_evaluate_user(line, user_index, infer=True, retrieve_limit: int = 3, extract_mode: str = "whole", vector_db_type="milvus", dataset_name="", max_history_turns: int = 5, extract_only: bool = False):
+def process_and_evaluate_user(line, user_index, infer=True, retrieve_limit: int = 3, extract_mode: str = "whole", vector_db_type="milvus", dataset_name="", max_history_turns: int = 5, extract_only: bool = False, response_only: bool = False):
     """
     封装单个用户的所有处理步骤，以便并行执行。
     返回一个包含所有统计信息的字典。
@@ -2382,8 +2554,29 @@ def process_and_evaluate_user(line, user_index, infer=True, retrieve_limit: int 
         # 注意：每个用户的pipeline实例不应该清空数据库，clear_db固定为False
         pipeline = MemoryPipeline(vector_db_type=vector_db_type, clear_db=False, dataset_name=dataset_name, extract_only=extract_only)
         
+        # 如果是Response Only模式，直接跳过处理，进行检索和生成
+        if response_only:
+            print(f"⏩ [User {user_index}] Response Only Mode: Skipping processing, retrieving context directly...")
+            retrieved_memories, memories_str, answer = response_user(line, pipeline, retrieve_limit, user_id=user_id)
+            
+            # 确保retrieved_memories不是None
+            retrieved_memories = retrieved_memories or []
+            
+            return {
+                "index": user_index,
+                "is_correct": False, # 不进行评估
+                "counts": {},
+                "question": line.get("question", "N/A"),
+                "question_type": line.get("question_type", "unknown"),
+                "answer": answer,
+                "golden_answer": line.get("answer", "N/A"),
+                "retrieved_memories": retrieved_memories,
+                "context": memories_str,
+            }
+
         # 处理用户记忆会话，传递user_id、extract_mode和max_history_turns
         memory_counts = pipeline.process_user_memory_infer(line, retrieve_limit=retrieve_limit, extract_mode=extract_mode, user_id=user_id, max_history_turns=max_history_turns)
+
         
         # 如果是提取模式，直接返回，跳过生成回复
         if extract_only:
@@ -2400,87 +2593,10 @@ def process_and_evaluate_user(line, user_index, infer=True, retrieve_limit: int 
             }
 
         # 生成问题响应，传递user_id
-        retrieved_memories, answer = response_user(line, pipeline, retrieve_limit, user_id=user_id)
+        retrieved_memories, memories_str, answer = response_user(line, pipeline, retrieve_limit, user_id=user_id)
         
         # 确保retrieved_memories不是None
         retrieved_memories = retrieved_memories or []
-        
-        # 构建上下文字符串用于后续处理
-        memories_with_facts = []
-        
-        # 生成查询向量，用于计算事实与查询的相关性
-        query_vec = get_embedding(line.get("question", ""))
-        
-        for mem in retrieved_memories:
-            # 添加记忆内容
-            memory_line = f"- [{datetime.fromtimestamp(mem['created_at'], timezone.utc).isoformat()}] {mem['content']}"
-            memories_with_facts.append(memory_line)
-
-            # print("#"*50)
-            # print("mem:\n", mem)
-            # print("#"*50)
-            
-            # 添加关联的事实（如果有）
-            related_facts = mem.get("related_facts", [])
-            max_facts_per_memory = 3  # 每个记忆的事实数量限制
-            if related_facts:
-                # 计算每个事实与查询的相关性分数
-                fact_with_scores = []
-                for fact in related_facts:
-                    try:
-                        fact_vec = get_embedding(fact["text"])
-                        # 使用向量点积作为相关性分数
-                        dot_product = sum(a * b for a, b in zip(query_vec, fact_vec))
-                        fact_with_scores.append((fact, dot_product))
-                    except Exception as e:
-                        print(f"计算事实相关性失败: {e}")
-                        fact_with_scores.append((fact, 0))
-                
-                # 根据相关性分数对事实进行排序
-                # fact_with_scores.sort(key=lambda x: x[1], reverse=True)
-                
-                
-                # 添加排序后的事实，限制数量
-                for i, (fact, score) in enumerate(fact_with_scores[:max_facts_per_memory]):
-                    # 优化事实输出格式
-                    # fact_text = fact['text']
-                    # details = fact['details']
-                    
-                    # # 格式化细节
-                    # if details:
-                    #     # 将细节列表转换为更易读的格式
-                    #     details_str = "; ".join(details)
-                    #     # 如果细节太长，截断
-                    #     if len(details_str) > 100:
-                    #         details_str = details_str[:97] + "..."
-                    #     fact_line = f"  ├── [{i+1}] 事实: {fact_text}\n  │     细节: {details_str}"
-                    # else:
-                    #     fact_line = f"  ├── [{i+1}] 事实: {fact_text}"
-                    
-                    # memories_with_facts.append(fact_line)
-
-                        
-                    fact_text = fact['text']
-                    details = fact['details']
-                    # 获取并格式化事实的timestamp
-                    fact_timestamp = fact.get('timestamp')
-                    timestamp_str = f"[{datetime.fromtimestamp(fact_timestamp, timezone.utc).isoformat()}] " if fact_timestamp else ""
-                    
-                    # 格式化细节
-                    if details:
-                        # 将细节列表转换为更易读的格式
-                        details_str = "; ".join(details)
-                        # 如果细节太长，截断
-                        if len(details_str) > 150:
-                            details_str = details_str[:150] + "..."
-                        fact_line = f"  ├── [{i+1}] {timestamp_str}事实: {fact_text}\n  │     细节: {details_str}"
-                    else:
-                        fact_line = f"  ├── [{i+1}] {timestamp_str}事实: {fact_text}"
-                    
-                    memories_with_facts.append(fact_line)
-
-                    
-        memories_str = "\n".join(memories_with_facts)
         
         # 获取标准答案和问题类型
         golden_answer = line.get("answer")
@@ -2536,6 +2652,7 @@ if __name__ == "__main__":
     parser.add_argument("--data-path", type=str, help="指定数据文件路径")
     parser.add_argument("--dataset-type", type=str, default="longmemeval", choices=["longmemeval", "hotpotqa"], help="指定数据集类型")
     parser.add_argument("--extract-only", action="store_true", help="仅进行提取，跳过预处理、检索和执行步骤，结果记录在memreader_log.jsonl中")
+    parser.add_argument("--response-only", action="store_true", help="仅进行响应生成，跳过提取和记忆更新，直接使用现有数据库和Core Memory")
     args = parser.parse_args()
     
     # 初始化内存管道
@@ -2658,9 +2775,9 @@ if __name__ == "__main__":
             
             # 并行处理用户
             with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
-                # 提交任务 - 确保参数顺序正确：line, idx, args.infer, args.retrieve_limit, args.extract_mode, args.vector_db_type, args.dataset_type, args.max_history_turns, args.extract_only
+                # 提交任务 - 确保参数顺序正确：line, idx, args.infer, args.retrieve_limit, args.extract_mode, args.vector_db_type, args.dataset_type, args.max_history_turns, args.extract_only, args.response_only
                 # 注意：这里clear_db固定为False，只在主函数中执行一次清空操作
-                future_to_user = {executor.submit(process_and_evaluate_user, line, idx, args.infer, args.retrieve_limit, args.extract_mode, args.vector_db_type, args.dataset_type, args.max_history_turns, args.extract_only): (line, idx) for idx, line in enumerate(lines)}
+                future_to_user = {executor.submit(process_and_evaluate_user, line, idx, args.infer, args.retrieve_limit, args.extract_mode, args.vector_db_type, args.dataset_type, args.max_history_turns, args.extract_only, args.response_only): (line, idx) for idx, line in enumerate(lines)}
                 
                 # 处理结果
                 for future in tqdm(as_completed(future_to_user), total=len(future_to_user)):
