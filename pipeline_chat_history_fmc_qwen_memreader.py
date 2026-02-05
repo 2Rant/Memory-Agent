@@ -400,6 +400,8 @@ Types of Information to Remember:
 5. Monitor Health and Wellness Preferences: Keep a record of dietary restrictions, fitness routines, and other wellness-related information.
 6. Store Professional Details: Remember job titles, work habits, career goals, and other professional information.
 7. Miscellaneous Information Management: Keep track of favorite books, movies, brands, and other miscellaneous details that the user and assistant share.
+8. Store Assistant's Key Information: Remember important explanations, definitions, project details, or summaries provided by the assistant.
+
 
 Here are some few shot examples:
 
@@ -1121,10 +1123,10 @@ class MemoryPipeline:
         统一格式化上下文，包含 Core Memory, Semantic Memory 和 Facts。
         """
         context_parts = []
-        
+        context_parts.append("### CORE MEMORY ###")
         # 1. Core Memory
         if core_memory and core_memory.strip():
-            context_parts.append("### CORE MEMORY ###")
+            # context_parts.append("### CORE MEMORY ###")
             context_parts.append(core_memory.strip())
             context_parts.append("") # 换行
             
@@ -1133,8 +1135,9 @@ class MemoryPipeline:
         facts = [item for item in retrieved_memories if item.get("type") == "fact"]
         
         # 2. Semantic Memory
+        context_parts.append("### SEMANTIC MEMORY ###")
         if memories:
-            context_parts.append("### SEMANTIC MEMORY ###")
+            # context_parts.append("### SEMANTIC MEMORY ###")
             for mem in memories:
                 # 简化时间戳格式: YYYY-MM-DD HH:MM
                 try:
@@ -1145,8 +1148,9 @@ class MemoryPipeline:
             context_parts.append("") # 换行
             
         # 3. Facts
+        context_parts.append("### FACTS ###")
         if facts:
-            context_parts.append("### FACTS ###")
+            # context_parts.append("### FACTS ###")
             for fact in facts:
                 # 简化时间戳格式: YYYY-MM-DD HH:MM
                 try:
@@ -1357,47 +1361,56 @@ class MemoryPipeline:
                 chat_history = []  # 保存完整的对话历史
                 session_turn_details = [] # 保存每一轮的详细提取结果
                 
-                # 遍历session list，成对形成turn
-                for i in range(0, len(session_or_text), 2):
-                    # 确保至少有一个user消息
-                    if i < len(session_or_text):
-                        user_msg = session_or_text[i]
-                        # 检查是否是user角色
-                        if user_msg.get("role") == "user":
-                            # 构建当前turn，包含user消息
-                            turn = [user_msg]
-                            # 如果有assistant消息，添加到当前turn
-                            if i + 1 < len(session_or_text) and session_or_text[i+1].get("role") == "assistant":
-                                turn.append(session_or_text[i+1])
-                            
-                            # 将turn转换为文本格式
-                            turn_text = parse_messages(turn)
-                            
-                            # 添加当前turn到chat history
-                            chat_history.append(turn)
-                            
-                            # 构建聊天历史，使用当前turn之前的max_history_turns轮对话
-                            history_turns = chat_history[:-1][-max_history_turns:]  # 最近max_history_turns轮历史
-                            history_text = parse_messages([msg for turn in history_turns for msg in turn])
-                            
-                            # 对单轮对话提取事实，传递timestamp和chat_history参数
-                            turn_facts = self._extract_single_turn(turn_text, timestamp, history_text)
-                            
-                            # 记录该轮的详细信息
-                            session_turn_details.append({
-                                "turn_idx": len(chat_history),
-                                "question": dataset_question,
-                                "turn_text": turn_text,
-                                "facts": turn_facts
-                            })
-                            
-                            # 为每个事实添加轮次信息和chat history引用
-                            for fact in turn_facts:
+                # 遍历session list，动态识别turn
+                i = 0
+                while i < len(session_or_text):
+                    msg = session_or_text[i]
+                    turn = []
+                    is_user_turn = False
+                    
+                    if msg.get("role") == "user":
+                        is_user_turn = True
+                        turn.append(msg)
+                        # 尝试获取后续的 assistant 回复
+                        if i + 1 < len(session_or_text) and session_or_text[i+1].get("role") == "assistant":
+                            turn.append(session_or_text[i+1])
+                            i += 2
+                        else:
+                            i += 1
+                    else:
+                        # 非User消息（如Assistant开场白或System消息），作为单独的turn加入历史，但不进行提取
+                        turn.append(msg)
+                        i += 1
+                    
+                    # 添加当前turn到chat history
+                    chat_history.append(turn)
+                    
+                    # 只有User发起的turn才进行事实提取
+                    if is_user_turn:
+                        # 将turn转换为文本格式
+                        turn_text = parse_messages(turn)
+                        
+                        # 构建聊天历史，使用当前turn之前的max_history_turns轮对话
+                        history_turns = chat_history[:-1][-max_history_turns:]  # 最近max_history_turns轮历史
+                        history_text = parse_messages([m for t in history_turns for m in t])
+                        
+                        # 对单轮对话提取事实，传递timestamp和chat_history参数
+                        turn_facts = self._extract_single_turn(turn_text, timestamp, history_text)
+                        
+                        # 记录该轮的详细信息
+                        session_turn_details.append({
+                            "turn_idx": len(chat_history),
+                            "question": dataset_question,
+                            "turn_text": turn_text,
+                            "facts": turn_facts
+                        })
+                        
+                        # 为每个事实添加轮次信息和chat history引用
+                        for fact in turn_facts:
                                 fact["turn_idx"] = len(chat_history)  # 轮次从1开始
                                 fact["has_history"] = len(history_text) > 0
                                 fact["history_turns"] = len(history_turns)  # 聊天历史的轮数
-                            
-                            all_facts.extend(turn_facts)
+                                all_facts.extend(turn_facts)
                     
                 # 将session转换为文本格式，用于返回
                 chunk_text = parse_messages(session_or_text)
