@@ -1366,51 +1366,56 @@ class MemoryPipeline:
                 while i < len(session_or_text):
                     msg = session_or_text[i]
                     turn = []
-                    is_user_turn = False
+                    # 无论谁说话，都将其视为一个待提取的Turn（或者尝试合并）
+                    # 策略：以任何消息开始，如果下一条是对方的回复，则合并为一个 Turn
                     
-                    if msg.get("role") == "user":
-                        is_user_turn = True
-                        turn.append(msg)
-                        # 尝试获取后续的 assistant 回复
-                        if i + 1 < len(session_or_text) and session_or_text[i+1].get("role") == "assistant":
-                            turn.append(session_or_text[i+1])
+                    turn.append(msg)
+                    current_role = msg.get("role")
+                    
+                    # 尝试合并下一条消息（如果是对话流的话）
+                    # 规则：User -> Assistant 或 Assistant -> User 可以合并
+                    # 但如果是 System 消息，通常单独处理
+                    if current_role != "system" and i + 1 < len(session_or_text):
+                        next_msg = session_or_text[i+1]
+                        next_role = next_msg.get("role")
+                        
+                        # 如果角色不同且下一条也不是 System，则合并
+                        if next_role != "system" and next_role != current_role:
+                            turn.append(next_msg)
                             i += 2
                         else:
                             i += 1
                     else:
-                        # 非User消息（如Assistant开场白或System消息），作为单独的turn加入历史，但不进行提取
-                        turn.append(msg)
                         i += 1
                     
                     # 添加当前turn到chat history
                     chat_history.append(turn)
                     
-                    # 只有User发起的turn才进行事实提取
-                    if is_user_turn:
-                        # 将turn转换为文本格式
-                        turn_text = parse_messages(turn)
-                        
-                        # 构建聊天历史，使用当前turn之前的max_history_turns轮对话
-                        history_turns = chat_history[:-1][-max_history_turns:]  # 最近max_history_turns轮历史
-                        history_text = parse_messages([m for t in history_turns for m in t])
-                        
-                        # 对单轮对话提取事实，传递timestamp和chat_history参数
-                        turn_facts = self._extract_single_turn(turn_text, timestamp, history_text)
-                        
-                        # 记录该轮的详细信息
-                        session_turn_details.append({
-                            "turn_idx": len(chat_history),
-                            "question": dataset_question,
-                            "turn_text": turn_text,
-                            "facts": turn_facts
-                        })
-                        
-                        # 为每个事实添加轮次信息和chat history引用
-                        for fact in turn_facts:
-                                fact["turn_idx"] = len(chat_history)  # 轮次从1开始
-                                fact["has_history"] = len(history_text) > 0
-                                fact["history_turns"] = len(history_turns)  # 聊天历史的轮数
-                                all_facts.extend(turn_facts)
+                    # 对所有 Turn 都进行事实提取（不仅仅是 User Turn）
+                    # 将turn转换为文本格式
+                    turn_text = parse_messages(turn)
+                    
+                    # 构建聊天历史，使用当前turn之前的max_history_turns轮对话
+                    history_turns = chat_history[:-1][-max_history_turns:]  # 最近max_history_turns轮历史
+                    history_text = parse_messages([m for t in history_turns for m in t])
+                    
+                    # 对单轮对话提取事实，传递timestamp和chat_history参数
+                    turn_facts = self._extract_single_turn(turn_text, timestamp, history_text)
+                    
+                    # 记录该轮的详细信息
+                    session_turn_details.append({
+                        "turn_idx": len(chat_history),
+                        "question": dataset_question,
+                        "turn_text": turn_text,
+                        "facts": turn_facts
+                    })
+                    
+                    # 为每个事实添加轮次信息和chat history引用
+                    for fact in turn_facts:
+                            fact["turn_idx"] = len(chat_history)  # 轮次从1开始
+                            fact["has_history"] = len(history_text) > 0
+                            fact["history_turns"] = len(history_turns)  # 聊天历史的轮数
+                            all_facts.extend(turn_facts)
                     
                 # 将session转换为文本格式，用于返回
                 chunk_text = parse_messages(session_or_text)
@@ -2750,7 +2755,8 @@ if __name__ == "__main__":
                 # 构建用户消息，包含问题
                 user_content = hotpotqa_item["question"]
                 
-                # 构建会话结构
+                # 构建会话结构 - 注意：HotpotQA 是基于 context 的问答，不属于对话，因此将 context 放在 system prompt 中，
+                # 将问题作为 user message。这里没有多轮对话，所以是一个单轮 session。
                 session = [
                     {"role": "system", "content": system_content.strip()},
                     {"role": "user", "content": user_content}
