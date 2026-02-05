@@ -1473,6 +1473,9 @@ class MemoryPipeline:
                                     {"role": "system", "content": formatted_prompt}, 
                                     {"role": "user", "content": user_input}],
                             response_format={"type": "json_object"}, 
+                            extra_body={
+                            "chat_template_kwargs": {"enable_thinking": False},
+                            },
                             temperature=0
                         )
                     except Exception as e_format:
@@ -1483,6 +1486,9 @@ class MemoryPipeline:
                             messages=[
                                     {"role": "system", "content": formatted_prompt}, 
                                     {"role": "user", "content": user_input}],
+                            extra_body={
+                            "chat_template_kwargs": {"enable_thinking": False},
+                            },
                             temperature=0
                         )
 
