@@ -102,27 +102,16 @@ def remove_code_blocks(content: str) -> str:
 
 def extract_json(text):
     """
-    Extracts JSON content from a string.
-    1. Tries to find content within ```json ... ``` or ``` ... ```
-    2. If not found, tries to find the first '{' and last '}' to extract the potential JSON object.
-    3. If all else fails, returns the text as-is.
+    Extracts JSON content from a string, removing enclosing triple backticks and optional 'json' tag if present.
+    If no code block is found, returns the text as-is.
     """
     text = text.strip()
-    # Try to find code block first
     match = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL)
     if match:
-        return match.group(1)
-    
-    # Try to find JSON object structure
-    try:
-        start_idx = text.find('{')
-        end_idx = text.rfind('}')
-        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-            return text[start_idx:end_idx+1]
-    except Exception:
-        pass
-        
-    return text  # assume it's raw JSON or failed to extract
+        json_str = match.group(1)
+    else:
+        json_str = text  # assume it's raw JSON
+    return json_str
 
 def parse_messages(messages):
     response = ""
@@ -1076,6 +1065,7 @@ LME_ANSWER_PROMPT = """
     1. Carefully analyze all provided memories.
     2. Pay special attention to the timestamps to determine the answer.
     3. If the question asks about a specific event or fact, look for direct evidence in the memories.
+    4. Answer the question based STRICTLY on the provided context below.
 
     # APPROACH (Think step by step):
     1. First, examine all memories that contain information related to the question.
@@ -1093,6 +1083,7 @@ LME_ANSWER_PROMPT = """
     Question: {question}
 
     Answer:
+    
     """
 
 LME_JUDGE_MODEL_TEMPLATE = """

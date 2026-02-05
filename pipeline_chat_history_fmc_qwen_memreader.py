@@ -1086,6 +1086,14 @@ class MemoryPipeline:
             self.core_memory_file = "core_memory.json"
         
         self._init_collections(clear_db=clear_db)
+         
+        # 如果需要清空数据库，同时清空 Core Memory 文件
+        if clear_db and os.path.exists(self.core_memory_file):
+            try:
+                os.remove(self.core_memory_file)
+                print(f"   🧹 Cleared Core Memory file: {self.core_memory_file}")
+            except Exception as e:
+                print(f"   ⚠️ Failed to clear Core Memory file: {e}")
 
     def _load_core_memory(self, user_id: str):
         """加载特定用户的 Core Memory"""
@@ -2387,9 +2395,12 @@ class MemoryPipeline:
         # 处理fact
         if use_fact_retrieval:
             # 搜索事实集合
+            # 增加过滤条件：status == 'active'，防止检索到被归档或删除的事实
+            fact_filter = f"user_id == '{user_id}' and status == 'active'"
+            
             fact_res = self.client.search(
-                self.fact_col, [query_vec], filter=f"user_id == '{user_id}'", limit=top_k,  # 搜索更多事实，避免遗漏
-                output_fields=["text", "timestamp", "fact_id", "details", "user_id", "embedding"]  # 添加embedding字段
+                self.fact_col, [query_vec], filter=fact_filter, limit=top_k,  # 搜索更多事实，避免遗漏
+                output_fields=["text", "timestamp", "fact_id", "details", "user_id", "embedding", "status"]  # 添加embedding字段
             )
             
             if fact_res and fact_res[0]:
