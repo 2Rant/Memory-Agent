@@ -945,6 +945,18 @@ class LocalJsonlDB:
                 except:
                     print(f"⚠️ Filter parse error (==): {cond}")
                     return False
+                    
+            elif "!=" in cond:
+                # Handle "field != 'value'"
+                try:
+                    parts = cond.split("!=")
+                    field = parts[0].strip()
+                    val = parts[1].strip().strip("'").strip('"')
+                    if str(item.get(field)) == val:
+                        return False
+                except:
+                    print(f"⚠️ Filter parse error (!=): {cond}")
+                    return False
             else:
                 # Ignore unsupported or complex filters for now, defaulting to match
                 # (This might include non-filtering data, but safer than crashing)
@@ -1591,17 +1603,16 @@ class MemoryPipeline:
             # 2. 🌟 直接从 fact_col 检索相关事实 (Related Facts)
             # 不再依赖 memory-fact 的关联，改为语义检索事实
             res_fact = self.client.search(
-                self.fact_col, [query_vec], filter=f"user_id == '{user_id}'", limit=limit,
-                output_fields=["fact_id", "text", "timestamp", "details"],
+                self.fact_col, [query_vec], filter=f"user_id == '{user_id}' and status == 'active'", limit=limit,
+                output_fields=["fact_id", "text", "timestamp", "details", "status"],
                 similarity_threshold=similarity_threshold
             )
             related_facts = []
             if res_fact and res_fact[0]:
                 for hit in res_fact[0]:
-                    # 检查是否不是 Status: Archived
                     entity = hit['entity']
-                    details = entity.get('details', [])
-                    if "Status: Archived" not in details:
+                    # Double check status
+                    if entity.get('status') == 'active':
                         related_facts.append(entity)
             
             context_bundles.append({
@@ -2052,9 +2063,8 @@ class MemoryPipeline:
                                 fact = facts[0]
                                 details = fact.get('details', [])
                                 if isinstance(details, list):
-                                    if "Status: Archived" not in details:
-                                        details.append("Status: Archived")
-                                        details.append(f"Archived Reason: Trajectorized into {content[:]}...")
+                                    # Clean up legacy status info from details if present
+                                    details = [d for d in details]
                                 
                                 self.client.upsert(self.fact_col, [{
                                     "fact_id": fid,
@@ -2063,6 +2073,8 @@ class MemoryPipeline:
                                     "details": details,
                                     "timestamp": fact['timestamp'],
                                     "user_id": fact.get('user_id', user_id),
+                                    "status": "archived",
+                                    "archived_reason": f"Trajectorized into {content[:]}...",
                                     "embedding": self._generate_fact_embedding(fact['text'], details)
                                 }])
                                 print(f"   Archived fact: {fid}")
@@ -2071,7 +2083,7 @@ class MemoryPipeline:
 
                 # 2. Create new Trajectory Fact
                 traj_fact_id = str(uuid.uuid4())
-                traj_details = ["Type: Trajectory"]
+                traj_details = []
                 self.client.upsert(self.fact_col, [{
                     "fact_id": traj_fact_id,
                     "linked_chunk_id": chunk_id,
@@ -2079,6 +2091,8 @@ class MemoryPipeline:
                     "details": traj_details,
                     "timestamp": ts,
                     "user_id": user_id,
+                    "status": "active",
+                    "type": "trajectory",
                     "embedding": self._generate_fact_embedding(content, traj_details)
                 }])
                 print(f"   Created trajectory fact: {traj_fact_id}")
@@ -2139,6 +2153,8 @@ class MemoryPipeline:
                 "details": fact['details'],
                 "timestamp": ts,
                 "user_id": user_id,
+                "status": "active",
+                "type": "fact",
                 "embedding": self._generate_fact_embedding(fact['text'], fact['details'])
             })
         if rows:
@@ -2200,12 +2216,17 @@ class MemoryPipeline:
                 # 使用更安全的查询方式，基于text的前缀匹配
                 # 只查询text字段包含fact_text关键词的事实
                 search_vec = get_embedding(fact_text)
-                search_results = self.client.search(
-                    self.fact_col, [search_vec], 
-                    output_fields=["fact_id", "details", "timestamp", "linked_chunk_id", "text"],
-                    limit=20,  # 只查询前20个最相似的事实
-                    similarity_threshold=0.8  # 设置相似度阈值，只返回相似度较高的事实
-                )
+                try:
+                    search_results = self.client.search(
+                        self.fact_col, [search_vec], 
+                        output_fields=["fact_id", "details", "timestamp", "linked_chunk_id", "text", "status"],
+                        limit=20,  # 只查询前20个最相似的事实
+                        filter=f"status == 'active' and user_id == '{user_id}'",
+                        similarity_threshold=0.8  # 设置相似度阈值，只返回相似度较高的事实
+                    )
+                except Exception as e_search:
+                    print(f"   ⚠️ [DEBUG] Vector search failed: {e_search}")
+                    raise e_search
                 
                 # 处理搜索结果，检查是否有完全匹配的事实
                 if search_results and search_results[0]:
@@ -2244,6 +2265,8 @@ class MemoryPipeline:
                     "details": fact_details,
                     "timestamp": ts,
                     "user_id": user_id,
+                    "status": "active",
+                    "type": "fact",
                     "embedding": self._generate_fact_embedding(fact_text, fact_details)
                 }])
                 print(f"   🔄 事实已存在，更新timestamp: {fact_id} (旧: {old_ts}, 新: {ts})")
@@ -2253,7 +2276,8 @@ class MemoryPipeline:
                     "text": fact_text,
                     "details": fact_details,
                     "fact_id": fact_id,
-                    "timestamp": ts  # 🌟 必须包含 timestamp
+                    "timestamp": ts,  # 🌟 必须包含 timestamp
+                    "type": "fact"
                 }
                 processed_facts.append(processed_fact)
                 
@@ -2271,6 +2295,8 @@ class MemoryPipeline:
                     "details": fact_details,
                     "timestamp": ts,
                     "user_id": user_id,
+                    "status": "active",
+                    "type": "fact",
                     "embedding": self._generate_fact_embedding(fact_text, fact_details)
                 }])
                 print(f"   Add fact: {fact_id}")
@@ -2279,7 +2305,8 @@ class MemoryPipeline:
                     "text": fact_text,
                     "details": fact_details,
                     "fact_id": fact_id,
-                    "timestamp": ts  # 🌟 必须包含 timestamp
+                    "timestamp": ts,  # 🌟 必须包含 timestamp
+                    "type": "fact"
                 }
                 
                 processed_facts.append(processed_fact)
@@ -2400,7 +2427,7 @@ class MemoryPipeline:
             
             fact_res = self.client.search(
                 self.fact_col, [query_vec], filter=fact_filter, limit=top_k,  # 搜索更多事实，避免遗漏
-                output_fields=["text", "timestamp", "fact_id", "details", "user_id", "embedding", "status"]  # 添加embedding字段
+                output_fields=["text", "timestamp", "fact_id", "details", "user_id", "embedding", "status", "type"]  # 添加embedding字段
             )
             
             if fact_res and fact_res[0]:
@@ -2524,6 +2551,9 @@ class MemoryPipeline:
                     # model="gpt-4o",
                     model=GENERATION_MODEL,
                     messages=[{"role": "system", "content": prompt}],
+                    extra_body={
+                            "chat_template_kwargs": {"enable_thinking": False},
+                            },
                     temperature=0,
                 )
         
