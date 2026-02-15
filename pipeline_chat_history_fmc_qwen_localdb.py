@@ -3,6 +3,7 @@ import time
 import uuid
 import json
 import numpy as np
+import chromadb
 from typing import List, Dict, Optional, Any, Union
 from dataclasses import dataclass
 from dotenv import load_dotenv
@@ -815,240 +816,276 @@ class MilvusConfig:
 # ==========================================
 # 1. Pipeline Class
 # ==========================================
-class LocalJsonlDB:
-    def __init__(self, storage_dir="./local_mem_db"):
+class LocalChromaDB:
+    def __init__(self, storage_dir="./local_chroma_db"):
         self.storage_dir = storage_dir
         if not os.path.exists(storage_dir):
             os.makedirs(storage_dir)
-        self.collections = {}
-        # DataType wrapper to mimic Milvus/VectorDB interface
-        class DataType:
-            VARCHAR = "VARCHAR"
-            FLOAT_VECTOR = "FLOAT_VECTOR"
-            INT64 = "INT64"
-            JSON = "JSON"
-        self.DataType = DataType()
-
-    def create_schema(self, auto_id=False, enable_dynamic_field=True):
-        class Schema:
-            def add_field(self, *args, **kwargs): pass
-        return Schema()
-
-    def prepare_index_params(self):
-        class IndexParams:
-            def add_index(self, **kwargs): pass
-        return IndexParams()
-
-    def has_collection(self, name):
-        return os.path.exists(os.path.join(self.storage_dir, f"{name}.jsonl"))
+        self.client = chromadb.PersistentClient(path=storage_dir)
+        print(f"[LocalChromaDB] Initialized at {storage_dir}")
 
     def create_collection(self, name, schema=None):
-        path = os.path.join(self.storage_dir, f"{name}.jsonl")
-        if not os.path.exists(path):
-            with open(path, 'w', encoding='utf-8') as f:
-                pass
-        self.collections[name] = []
-        print(f"[LocalJsonlDB] Collection {name} created at {path}")
+        try:
+            self.client.get_or_create_collection(name=name, metadata={"hnsw:space": "cosine"})
+            print(f"[LocalChromaDB] Collection {name} ready.")
+        except Exception as e:
+            print(f"[LocalChromaDB] Error creating collection {name}: {e}")
 
-    def create_index(self, collection_name, index_params=None):
-        pass # No-op for JSONL
+    def has_collection(self, name):
+        try:
+            self.client.get_collection(name)
+            return True
+        except:
+            return False
 
     def drop_collection(self, name):
-        path = os.path.join(self.storage_dir, f"{name}.jsonl")
-        if os.path.exists(path):
-            os.remove(path)
-        if name in self.collections:
-            del self.collections[name]
-        print(f"[LocalJsonlDB] Dropped collection {name}")
-
-    def load_collection(self, name):
-        path = os.path.join(self.storage_dir, f"{name}.jsonl")
-        data = []
-        if os.path.exists(path):
-            with open(path, 'r', encoding='utf-8') as f:
-                for line in f:
-                    if line.strip():
-                        try:
-                            data.append(json.loads(line))
-                        except:
-                            continue
-        self.collections[name] = data
-        print(f"[LocalJsonlDB] Loaded {len(data)} items from {name}")
+        try:
+            self.client.delete_collection(name)
+            print(f"[LocalChromaDB] Dropped collection {name}")
+        except:
+            pass
+            
+    def _parse_filter(self, filter_arg):
+        if not filter_arg:
+            return None
+            
+        if isinstance(filter_arg, dict):
+            return filter_arg
+            
+        filter_str = filter_arg
+        conditions = filter_str.split(' and ')
+        chroma_conditions = []
+        
+        for cond in conditions:
+            cond = cond.strip()
+            if not cond: continue
+            
+            if " in [" in cond:
+                parts = cond.split(" in [")
+                field = parts[0].strip()
+                val_content = parts[1].split("]")[0]
+                vals = [v.strip().strip("'").strip('"') for v in val_content.split(",")]
+                chroma_conditions.append({field: {"$in": vals}})
+            elif "==" in cond:
+                parts = cond.split("==")
+                field = parts[0].strip()
+                val = parts[1].strip().strip("'").strip('"')
+                chroma_conditions.append({field: val})
+            elif "!=" in cond:
+                parts = cond.split("!=")
+                field = parts[0].strip()
+                val = parts[1].strip().strip("'").strip('"')
+                chroma_conditions.append({field: {"$ne": val}})
+        
+        if len(chroma_conditions) == 0:
+            return None
+        elif len(chroma_conditions) == 1:
+            return chroma_conditions[0]
+        else:
+            return {"$and": chroma_conditions}
 
     def upsert(self, collection_name, data: List[Dict]):
-        if collection_name not in self.collections:
-            self.load_collection(collection_name)
+        if not data:
+            return
+            
+        col = self.client.get_or_create_collection(name=collection_name, metadata={"hnsw:space": "cosine"})
         
-        path = os.path.join(self.storage_dir, f"{collection_name}.jsonl")
+        ids = []
+        embeddings = []
+        documents = []
+        metadatas = []
         
-        # Simple upsert: remove existing items with same ID and append new ones
-        # Identify primary key based on collection name convention or assume specific keys
-        # Fact: fact_id, Memory: memory_id, Chunk: chunk_id
         pk_field = "id"
         if "fact" in collection_name: pk_field = "fact_id"
         elif "memories" in collection_name: pk_field = "memory_id"
         elif "chunk" in collection_name: pk_field = "chunk_id"
         
-        new_ids = {item.get(pk_field) for item in data if item.get(pk_field)}
-        
-        # Filter out existing items that are being updated
-        existing = self.collections[collection_name]
-        kept_items = [item for item in existing if item.get(pk_field) not in new_ids]
-        
-        # Add new items
-        updated_list = kept_items + data
-        self.collections[collection_name] = updated_list
-        
-        # Rewrite file (inefficient for large data but functional for local test)
-        with open(path, 'w', encoding='utf-8') as f:
-            for item in updated_list:
-                f.write(json.dumps(item, ensure_ascii=False) + "\n")
-        
-        print(f"[LocalJsonlDB] Upserted {len(data)} items into {collection_name}")
-
-    def _match_filter(self, item, filter_str):
-        """Helper to evaluate filter string against an item"""
-        if not filter_str:
-            return True
-        
-        # Split by ' and ' to handle multiple conditions
-        # Note: This is a simple parser and assumes ' and ' is the only logical operator used
-        conditions = filter_str.split(' and ')
-        
-        for cond in conditions:
-            cond = cond.strip()
-            if not cond:
+        for item in data:
+            item_id = item.get(pk_field)
+            if not item_id:
                 continue
                 
-            if " in [" in cond:
-                # Handle "field in ['a', 'b']"
-                try:
-                    parts = cond.split(" in [")
-                    field = parts[0].strip()
-                    val_content = parts[1].split("]")[0]
-                    # Handle quoted strings in list
-                    vals = [v.strip().strip("'").strip('"') for v in val_content.split(",")]
-                    if str(item.get(field)) not in vals:
-                        return False
-                except:
-                    print(f"⚠️ Filter parse error (IN): {cond}")
-                    return False
-                    
-            elif "==" in cond:
-                # Handle "field == 'value'"
-                try:
-                    parts = cond.split("==")
-                    field = parts[0].strip()
-                    val = parts[1].strip().strip("'").strip('"')
-                    if str(item.get(field)) != val:
-                        return False
-                except:
-                    print(f"⚠️ Filter parse error (==): {cond}")
-                    return False
-                    
-            elif "!=" in cond:
-                # Handle "field != 'value'"
-                try:
-                    parts = cond.split("!=")
-                    field = parts[0].strip()
-                    val = parts[1].strip().strip("'").strip('"')
-                    if str(item.get(field)) == val:
-                        return False
-                except:
-                    print(f"⚠️ Filter parse error (!=): {cond}")
-                    return False
+            ids.append(str(item_id))
+            
+            emb = item.get("embedding")
+            if emb:
+                embeddings.append(emb)
             else:
-                # Ignore unsupported or complex filters for now, defaulting to match
-                # (This might include non-filtering data, but safer than crashing)
-                pass
+                embeddings.append([0.0] * 1536) 
                 
-        return True
+            doc = item.get("text") or item.get("content") or ""
+            documents.append(doc)
+            
+            meta = {}
+            for k, v in item.items():
+                if k in [pk_field, "embedding", "text", "content"]:
+                    continue
+                if isinstance(v, (list, dict)):
+                    meta[k] = json.dumps(v, ensure_ascii=False)
+                elif v is None:
+                    meta[k] = ""
+                else:
+                    meta[k] = v
+            
+            if "text" in item: meta["_text_backup"] = item["text"]
+            if "content" in item: meta["_content_backup"] = item["content"]
+            
+            metadatas.append(meta)
+            
+        if ids:
+            col.upsert(
+                ids=ids,
+                embeddings=embeddings,
+                documents=documents,
+                metadatas=metadatas
+            )
+        
+        print(f"[LocalChromaDB] Upserted {len(ids)} items into {collection_name}")
 
     def search(self, collection_name, vectors, filter=None, limit=5, output_fields=None, similarity_threshold=None):
-        if collection_name not in self.collections:
-            self.load_collection(collection_name)
-            
-        items = self.collections[collection_name]
-        if not items:
+        try:
+            col = self.client.get_collection(name=collection_name)
+        except ValueError:
             return [[]]
             
-        # Filter items using improved matcher
-        filtered_items = [item for item in items if self._match_filter(item, filter)]
-                
-        if not filtered_items:
-            return [[]]
-
-        # Calculate cosine similarity
-        query_vec = np.array(vectors[0])
-        results = []
+        where = self._parse_filter(filter)
         
-        for item in filtered_items:
-            item_vec = item.get("embedding")
-            if not item_vec:
-                continue
-            item_vec = np.array(item_vec)
+        results = col.query(
+            query_embeddings=vectors,
+            n_results=limit,
+            where=where,
+            include=["metadatas", "documents", "distances"]
+        )
+        
+        final_results = []
+        
+        for i in range(len(vectors)):
+            batch_res = []
+            ids = results['ids'][i]
+            dists = results['distances'][i]
+            metas = results['metadatas'][i]
+            docs = results['documents'][i]
             
-            # Cosine similarity
-            norm_q = np.linalg.norm(query_vec)
-            norm_i = np.linalg.norm(item_vec)
-            if norm_q == 0 or norm_i == 0:
-                score = 0
-            else:
-                score = np.dot(query_vec, item_vec) / (norm_q * norm_i)
-            
-            if similarity_threshold and score < similarity_threshold:
-                continue
+            for j in range(len(ids)):
+                dist = dists[j]
+                similarity = 1.0 - dist
                 
-            # Create result object
-            res = {"entity": {k: item.get(k) for k in (output_fields or item.keys())}, "distance": float(score), "id": item.get("id")}
-            # Also keep all fields in entity for convenience if output_fields is missing key stuff
-            if output_fields:
-                 for k in output_fields:
-                     res['entity'][k] = item.get(k)
-            else:
-                 res['entity'] = item
+                if similarity_threshold and similarity < similarity_threshold:
+                    continue
+                    
+                entity = metas[j].copy()
+                for k, v in entity.items():
+                    if isinstance(v, str) and (v.startswith("{") or v.startswith("[")):
+                        try:
+                            entity[k] = json.loads(v)
+                        except:
+                            pass
+                
+                if "_text_backup" in entity:
+                    entity["text"] = entity.pop("_text_backup")
+                elif docs[j]:
+                    entity["text"] = docs[j]
+                    
+                if "_content_backup" in entity:
+                    entity["content"] = entity.pop("_content_backup")
+                elif docs[j]:
+                    entity["content"] = docs[j]
+                    
+                pk_field = "id"
+                if "fact" in collection_name: pk_field = "fact_id"
+                elif "memories" in collection_name: pk_field = "memory_id"
+                elif "chunk" in collection_name: pk_field = "chunk_id"
+                entity[pk_field] = ids[j]
+                
+                if output_fields:
+                    filtered_entity = {k: entity.get(k) for k in output_fields if k in entity}
+                    for k in output_fields:
+                        if k not in filtered_entity:
+                            filtered_entity[k] = entity.get(k)
+                    entity = filtered_entity
+
+                batch_res.append({
+                    "entity": entity,
+                    "distance": similarity, 
+                    "id": ids[j]
+                })
             
-            results.append(res)
+            batch_res.sort(key=lambda x: x['distance'], reverse=True)
+            final_results.append(batch_res)
             
-        # Sort by score descending
-        results.sort(key=lambda x: x['distance'], reverse=True)
-        return [results[:limit]]
+        return final_results
 
     def query(self, collection_name, filter=None, output_fields=None, limit=None):
-        if collection_name not in self.collections:
-            self.load_collection(collection_name)
+        try:
+            col = self.client.get_collection(name=collection_name)
+        except ValueError:
+            return []
             
-        items = self.collections[collection_name]
+        where = self._parse_filter(filter)
         
-        # Filter items using improved matcher
-        filtered_items = [item for item in items if self._match_filter(item, filter)]
+        get_args = {"where": where} if where else {}
+        if limit:
+            get_args["limit"] = limit
+            
+        res = col.get(**get_args)
         
-        results = []
-        for item in filtered_items:
-            if output_fields:
-                results.append({k: item.get(k) for k in output_fields})
-            else:
-                results.append(item)
+        items = []
+        ids = res['ids']
+        metas = res['metadatas']
+        docs = res['documents']
+        
+        for j in range(len(ids)):
+            entity = metas[j].copy() if metas[j] else {}
+            for k, v in entity.items():
+                if isinstance(v, str) and (v.startswith("{") or v.startswith("[")):
+                    try:
+                        entity[k] = json.loads(v)
+                    except:
+                        pass
+            
+            if "_text_backup" in entity:
+                entity["text"] = entity.pop("_text_backup")
+            elif docs[j]:
+                entity["text"] = docs[j]
                 
-        return results
+            if "_content_backup" in entity:
+                entity["content"] = entity.pop("_content_backup")
+            elif docs[j]:
+                entity["content"] = docs[j]
+                
+            pk_field = "id"
+            if "fact" in collection_name: pk_field = "fact_id"
+            elif "memories" in collection_name: pk_field = "memory_id"
+            elif "chunk" in collection_name: pk_field = "chunk_id"
+            entity[pk_field] = ids[j]
+            
+            if output_fields:
+                filtered_entity = {k: entity.get(k) for k in output_fields}
+                items.append(filtered_entity)
+            else:
+                items.append(entity)
+                
+        return items
 
     def delete(self, collection_name, filter=None):
-        """Simulate delete by filtering out items"""
-        if collection_name not in self.collections:
+        try:
+            col = self.client.get_collection(name=collection_name)
+        except ValueError:
             return
             
-        items = self.collections[collection_name]
-        # Keep items that DO NOT match the filter
-        kept_items = [item for item in items if not self._match_filter(item, filter)]
-        
-        self.collections[collection_name] = kept_items
-        
-        # Rewrite file
-        path = os.path.join(self.storage_dir, f"{collection_name}.jsonl")
-        with open(path, 'w', encoding='utf-8') as f:
-            for item in kept_items:
-                f.write(json.dumps(item, ensure_ascii=False) + "\n")
-        print(f"[LocalJsonlDB] Deleted items from {collection_name}, remaining: {len(kept_items)}")
+        where = self._parse_filter(filter)
+        if where:
+            col.delete(where=where)
+            print(f"[LocalChromaDB] Deleted items from {collection_name} with filter {filter}")
+        elif filter is None:
+             try:
+                 # Delete all items
+                 ids = col.get()['ids']
+                 if ids:
+                    col.delete(ids=ids)
+                 print(f"[LocalChromaDB] Deleted ALL items from {collection_name}")
+             except:
+                 pass
 
 class MemoryPipeline:
     def __init__(self, config=None, vector_db_type="milvus", clear_db=False, mode='eval', dataset_name="", extract_only=False):
@@ -1070,8 +1107,8 @@ class MemoryPipeline:
         self.config = config
         
         # 使用本地 JSONL DB 替代 VectorDBFactory
-        print("🚀 Using Local JSONL Database storage_dir='./local_mem_db'")
-        self.client = LocalJsonlDB(storage_dir="./local_mem_db")
+        print("🚀 Using Local Chroma Database storage_dir='./local_chroma_db'")
+        self.client = LocalChromaDB(storage_dir="./local_chroma_db")
         
         # 根据模式和数据集名称设置集合名称
 
@@ -1591,7 +1628,7 @@ class MemoryPipeline:
             
             # 1. 检索相关记忆 (Candidates)
             res_mem = self.client.search(
-                self.semantic_col, [query_vec], filter=f"status == 'active' and user_id == '{user_id}'", limit=limit,
+                self.semantic_col, [query_vec], filter={"$and": [{"status": "active"}, {"user_id": user_id}]}, limit=limit,
                 output_fields=["content", "memory_id", "created_at"],
                 similarity_threshold=similarity_threshold
             )
@@ -1603,7 +1640,7 @@ class MemoryPipeline:
             # 2. 🌟 直接从 fact_col 检索相关事实 (Related Facts)
             # 不再依赖 memory-fact 的关联，改为语义检索事实
             res_fact = self.client.search(
-                self.fact_col, [query_vec], filter=f"user_id == '{user_id}' and status == 'active'", limit=limit,
+                self.fact_col, [query_vec], filter={"$and": [{"user_id": user_id}, {"status": "active"}]}, limit=limit,
                 output_fields=["fact_id", "text", "timestamp", "details", "status"],
                 similarity_threshold=similarity_threshold
             )
@@ -1988,7 +2025,7 @@ class MemoryPipeline:
                 # 查询旧的memory内容用于打印
                 old_memories = self.client.query(
                     collection_name=self.semantic_col,
-                    filter=f"memory_id == '{target_mem_id}'",
+                    filter={"memory_id": target_mem_id},
                     output_fields=["content"]
                 )
                 old_content = "" if not old_memories else old_memories[0].get("content", "")
@@ -2012,8 +2049,9 @@ class MemoryPipeline:
                 # 查询 source memories 用于展示
                 source_mems = []
                 if source_ids:
-                    quoted_source_ids = [f'"{sid}"' for sid in source_ids]
-                    mem_filter = f"status == 'active' and memory_id in [{','.join(quoted_source_ids)}]"
+                    # quoted_source_ids = [f'"{sid}"' for sid in source_ids]
+                    # mem_filter = f"status == 'active' and memory_id in [{','.join(quoted_source_ids)}]"
+                    mem_filter = {"$and": [{"status": "active"}, {"memory_id": {"$in": source_ids}}]}
                     try:
                         source_mems = self.client.query(
                             collection_name=self.semantic_col,
@@ -2056,7 +2094,7 @@ class MemoryPipeline:
                         try:
                             facts = self.client.query(
                                 collection_name=self.fact_col,
-                                filter=f'fact_id == "{fid}"',
+                                filter={"fact_id": fid},
                                 output_fields=["fact_id", "details", "text", "timestamp", "user_id"]
                             )
                             if facts:
@@ -2221,7 +2259,7 @@ class MemoryPipeline:
                         self.fact_col, [search_vec], 
                         output_fields=["fact_id", "details", "timestamp", "linked_chunk_id", "text", "status"],
                         limit=20,  # 只查询前20个最相似的事实
-                        filter=f"status == 'active' and user_id == '{user_id}'",
+                        filter={"$and": [{"status": "active"}, {"user_id": user_id}]},
                         similarity_threshold=0.8  # 设置相似度阈值，只返回相似度较高的事实
                     )
                 except Exception as e_search:
@@ -2383,7 +2421,8 @@ class MemoryPipeline:
         query_vec = get_embedding(query_text)
         
         # 添加调试信息
-        filter_expr = f"status == 'active' and user_id == '{user_id}'"
+        # filter_expr = f"status == 'active' and user_id == '{user_id}'"
+        filter_expr = {"$and": [{"status": "active"}, {"user_id": user_id}]}
         print(f"   🔍 搜索过滤条件: {filter_expr}, 阈值: {threshold}, 向量搜索阈值: {similarity_threshold}")
         
         # ===========================
@@ -2423,7 +2462,8 @@ class MemoryPipeline:
         if use_fact_retrieval:
             # 搜索事实集合
             # 增加过滤条件：status == 'active'，防止检索到被归档或删除的事实
-            fact_filter = f"user_id == '{user_id}' and status == 'active'"
+            # fact_filter = f"user_id == '{user_id}' and status == 'active'"
+            fact_filter = {"$and": [{"user_id": user_id}, {"status": "active"}]}
             
             fact_res = self.client.search(
                 self.fact_col, [query_vec], filter=fact_filter, limit=top_k,  # 搜索更多事实，避免遗漏
