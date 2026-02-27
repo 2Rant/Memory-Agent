@@ -352,9 +352,9 @@ def generate_sft_data(input_file, output_file, max_items=None, num_threads=4):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate SFT data for MemReader distillation.")
-    parser.add_argument("--input", type=str, default="/mnt/innovator/ljl/Memory-Agent/data/lme/longmemeval_s_cleaned.json", help="Input JSON file path")
-    parser.add_argument("--output", type=str, default="/mnt/innovator/ljl/Memory-Agent/data/lme/memreader_sft_data.jsonl", help="Output JSONL file path")
-    parser.add_argument("--max_items", type=int, default=None, help="Maximum number of items to process")
+    parser.add_argument("--input", type=str, default="/mnt/public/code/ljl/Memory-Agent/data/lme/longmemeval_s_cleaned.json", help="Input JSON file path")
+    parser.add_argument("--output", type=str, default="/mnt/public/code/ljl/Memory-Agent/data/lme/memreader_sft_data.jsonl", help="Output JSONL file path")
+    parser.add_argument("--max_items", type=int, default=100, help="Maximum number of items to process")
     parser.add_argument("--num_threads", type=int, default=8, help="Number of threads for parallel processing")
     
     args = parser.parse_args()
